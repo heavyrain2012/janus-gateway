@@ -285,11 +285,11 @@ int janus_mqtt_init(janus_transport_callbacks *callback, const char *config_path
 	janus_config_item *client_id_item = janus_config_get(config, config_general, janus_config_type_item, "client_id");
 	const char *client_id = g_strdup((client_id_item && client_id_item->value) ? client_id_item->value : "guest");
 
-	janus_config_item *username_item = janus_config_get(config, config_general, janus_config_type_item, "username");
-	ctx->connect.username = g_strdup((username_item && username_item->value) ? username_item->value : "guest");
+	// janus_config_item *username_item = janus_config_get(config, config_general, janus_config_type_item, "username");
+	ctx->connect.username = g_strdup((client_id_item && client_id_item->value) ? client_id_item->value : "guest");
 
-	janus_config_item *password_item = janus_config_get(config, config_general, janus_config_type_item, "password");
-	ctx->connect.password = g_strdup((password_item && password_item->value) ? password_item->value : "guest");
+	// janus_config_item *password_item = janus_config_get(config, config_general, janus_config_type_item, "password");
+	ctx->connect.password = g_strdup((client_id_item && client_id_item->value) ? client_id_item->value : "guest");
 
 	char node_host[1024];
         memset(node_host, 0, sizeof(node_host));
