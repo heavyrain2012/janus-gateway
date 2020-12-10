@@ -122,6 +122,7 @@ typedef struct janus_mqtt_context {
 	janus_transport_callbacks *gateway;
 	MQTTAsync client;
 	char *im_host;
+	int im_port;
 	struct {
 		int mqtt_version;
 		int keep_alive_interval;
@@ -282,6 +283,9 @@ int janus_mqtt_init(janus_transport_callbacks *callback, const char *config_path
 	janus_config_item *im_host_item = janus_config_get(config, config_general, janus_config_type_item, "im_host");
 	ctx->im_host = g_strdup((im_host_item && im_host_item->value) ? im_host_item->value : "localhost");
 
+	janus_config_item *im_port_item = janus_config_get(config, config_general, janus_config_type_item, "im_port");
+	ctx->im_port = (im_port_item && im_port_item->value) ? atoi(im_port_item->value) : 80;
+
 	janus_config_item *client_id_item = janus_config_get(config, config_general, janus_config_type_item, "client_id");
 	const char *client_id = g_strdup((client_id_item && client_id_item->value) ? client_id_item->value : "guest");
 
@@ -293,7 +297,7 @@ int janus_mqtt_init(janus_transport_callbacks *callback, const char *config_path
 
 	char node_host[1024];
         memset(node_host, 0, sizeof(node_host));
-        getNodeHost(ctx->im_host, ctx->connect.username, node_host);
+        getNodeHost(ctx->im_host, ctx->im_port, ctx->connect.username, node_host);
 	char urlbuf[1024];
 	memset(urlbuf, 0, sizeof(urlbuf));
 	snprintf(urlbuf, 1024, "tcp://%s:1883", node_host);
@@ -852,7 +856,7 @@ void janus_mqtt_client_connect_failure_impl(void *context, int rc) {
 
 	char node_host[1024];
 	memset(node_host, 0, sizeof(node_host));
-	getNodeHost(ctx->im_host, ctx->connect.username, node_host);
+	getNodeHost(ctx->im_host, ctx->im_port, ctx->connect.username, node_host);
 	char urlbuf[1024];
 	memset(urlbuf, 0, sizeof(urlbuf));
 	snprintf(urlbuf, 1024, "tcp://%s:1883", node_host);
@@ -1297,7 +1301,7 @@ int janus_mqtt_client_get_response_code5(MQTTAsync_failureData5 *response) {
 }
 #endif
 
-int getNodeHost(const char* host, const char* client, char* content) {
+int getNodeHost(const char* host, int port, const char* client, char* content) {
     char buffer[BUFSIZ];
     char result[1024];
     enum CONSTEXPR { MAX_REQUEST_LEN = 1024};
@@ -1309,7 +1313,7 @@ int getNodeHost(const char* host, const char* client, char* content) {
     ssize_t nbytes_total, nbytes_last;
     struct hostent *hostent;
     struct sockaddr_in sockaddr_in;
-    unsigned short server_port = 80;
+    unsigned short server_port = (unsigned short)port;
 
 
 
