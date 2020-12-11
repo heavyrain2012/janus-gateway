@@ -303,7 +303,7 @@ int janus_mqtt_init(janus_transport_callbacks *callback, const char *config_path
 	memset(urlbuf, 0, sizeof(urlbuf));
 	snprintf(urlbuf, 1024, "tcp://%s:1883", node_host);
 
-	if(g_mqtturl != null) {
+	if(g_mqtturl != NULL) {
 		g_free(g_mqtturl);
 		g_mqtturl = g_strdup(urlbuf);
 	}
