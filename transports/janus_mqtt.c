@@ -69,7 +69,7 @@ int janus_mqtt_send_message(janus_transport_session *transport, void *request_id
 void janus_mqtt_session_created(janus_transport_session *transport, guint64 session_id);
 void janus_mqtt_session_over(janus_transport_session *transport, guint64 session_id, gboolean timeout, gboolean claimed);
 void janus_mqtt_session_claimed(janus_transport_session *transport, guint64 session_id);
-int getNodeHost(const char* host, const char* client, char* content);
+int getNodeHost(const char* host, int port, const char* client, char* content);
 
 #define JANUS_MQTT_VERSION_3_1          "3.1"
 #define JANUS_MQTT_VERSION_3_1_1        "3.1.1"
