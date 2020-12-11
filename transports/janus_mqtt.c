@@ -305,8 +305,8 @@ int janus_mqtt_init(janus_transport_callbacks *callback, const char *config_path
 
 	if(g_mqtturl != NULL) {
 		g_free(g_mqtturl);
-		g_mqtturl = g_strdup(urlbuf);
 	}
+	g_mqtturl = g_strdup(urlbuf);
 
 
 	janus_config_item *json_item = janus_config_get(config, config_general, janus_config_type_item, "json");
