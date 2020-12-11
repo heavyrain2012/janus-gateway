@@ -237,6 +237,7 @@ void janus_mqtt_client_publish_status_failure_impl(void *context, int rc);
 /* We only handle a single client */
 static janus_mqtt_context *context_ = NULL;
 static janus_transport_session *mqtt_session = NULL;
+static char *g_mqtturl = NULL;
 
 int janus_mqtt_init(janus_transport_callbacks *callback, const char *config_path) {
 	if(callback == NULL || config_path == NULL) {
@@ -296,13 +297,17 @@ int janus_mqtt_init(janus_transport_callbacks *callback, const char *config_path
 	ctx->connect.password = g_strdup((client_id_item && client_id_item->value) ? client_id_item->value : "guest");
 
 	char node_host[1024];
-        memset(node_host, 0, sizeof(node_host));
-        getNodeHost(ctx->im_host, ctx->im_port, ctx->connect.username, node_host);
+	memset(node_host, 0, sizeof(node_host));
+	getNodeHost(ctx->im_host, ctx->im_port, ctx->connect.username, node_host);
 	char urlbuf[1024];
 	memset(urlbuf, 0, sizeof(urlbuf));
 	snprintf(urlbuf, 1024, "tcp://%s:1883", node_host);
 
-	const char *url = g_strdup(urlbuf);
+	if(g_mqtturl != null) {
+		g_free(g_mqtturl);
+		g_mqtturl = g_strdup(urlbuf);
+	}
+
 
 	janus_config_item *json_item = janus_config_get(config, config_general, janus_config_type_item, "json");
 	if(json_item && json_item->value) {
@@ -340,7 +345,7 @@ int janus_mqtt_init(janus_transport_callbacks *callback, const char *config_path
 		}
 	}
 	if(ssl_item && ssl_item->value && janus_is_true(ssl_item->value)) {
-		if(strstr(url, "ssl://") != url)
+		if(strstr(g_mqtturl, "ssl://") != g_mqtturl)
 			JANUS_LOG(LOG_WARN, "SSL enabled, but MQTT url doesn't start with ssl://...\n");
 
 		ctx->ssl_enabled = TRUE;
@@ -371,7 +376,7 @@ int janus_mqtt_init(janus_transport_callbacks *callback, const char *config_path
 		ctx->verify_peer = (verify && verify->value && janus_is_true(verify->value)) ? TRUE : FALSE;
 	} else {
 		JANUS_LOG(LOG_INFO, "MQTT SSL support disabled\n");
-		if(strstr(url, "ssl://") == url)
+		if(strstr(g_mqtturl, "ssl://") == g_mqtturl)
 			JANUS_LOG(LOG_WARN, "SSL disabled, but MQTT url starts with ssl:// instead of tcp://...\n");
 	}
 
@@ -575,7 +580,7 @@ int janus_mqtt_init(janus_transport_callbacks *callback, const char *config_path
 
 	if(MQTTAsync_createWithOptions(
 			&ctx->client,
-			url,
+			g_mqtturl,
 			client_id,
 			MQTTCLIENT_PERSISTENCE_NONE,
 			NULL,
@@ -611,7 +616,6 @@ int janus_mqtt_init(janus_transport_callbacks *callback, const char *config_path
 		goto error;
 	}
 
-	g_free((char *)url);
 	g_free((char *)client_id);
 	janus_config_destroy(config);
 	return 0;
@@ -620,7 +624,6 @@ error:
 	/* If we got here, something went wrong */
 	janus_transport_session_destroy(mqtt_session);
 	janus_mqtt_client_destroy_context(&ctx);
-	g_free((char *)url);
 	g_free((char *)client_id);
 	janus_config_destroy(config);
 
@@ -861,6 +864,10 @@ void janus_mqtt_client_connect_failure_impl(void *context, int rc) {
 	memset(urlbuf, 0, sizeof(urlbuf));
 	snprintf(urlbuf, 1024, "tcp://%s:1883", node_host);
 
+	if(strcmp(g_mqtturl, urlbuf) != 0) {
+		JANUS_LOG(LOG_ERR, "MQTT client address changed, need reboot\n");
+		exist(-1);
+	}
 
 	if(notify_events && ctx && ctx->gateway && ctx->gateway->events_is_enabled()) {
 		json_t *info = json_object();
