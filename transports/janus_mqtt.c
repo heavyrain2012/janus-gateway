@@ -866,7 +866,7 @@ void janus_mqtt_client_connect_failure_impl(void *context, int rc) {
 
 	if(strcmp(g_mqtturl, urlbuf) != 0) {
 		JANUS_LOG(LOG_ERR, "MQTT client address changed, need reboot\n");
-		exist(-1);
+		exit(-1);
 	}
 
 	if(notify_events && ctx && ctx->gateway && ctx->gateway->events_is_enabled()) {
