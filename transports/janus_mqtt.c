@@ -117,6 +117,8 @@ static gboolean notify_events = TRUE;
 /* JSON serialization options */
 static size_t json_format_ = JSON_INDENT(3) | JSON_PRESERVE_ORDER;
 
+static int g_continue_failure_count = 0;
+
 /* MQTT client context */
 typedef struct janus_mqtt_context {
 	janus_transport_callbacks *gateway;
@@ -690,9 +692,16 @@ int janus_mqtt_send_message(janus_transport_session *transport, void *request_id
 
 	int rc = janus_mqtt_client_publish_message(ctx, payload, admin);
 	if(rc != MQTTASYNC_SUCCESS) {
+		g_continue_failure_count++;
 		JANUS_LOG(LOG_ERR, "Can't publish to MQTT topic: %s, return code: %d\n", admin ? ctx->admin.publish.topic : ctx->publish.topic, rc);
+	} else {
+		g_continue_failure_count = 0;
 	}
 	free(payload);
+
+	if(g_continue_failure_count > 10) {
+		exit(EXIT_FAILURE);
+	}
 
 	return 0;
 }
