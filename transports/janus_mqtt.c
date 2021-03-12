@@ -135,6 +135,8 @@ static struct janus_json_parameter configure_parameters[] = {
 #define JANUS_MQTT_ERROR_UNKNOWN_ERROR			499
 
 
+static int g_continue_failure_count = 0;
+
 /* MQTT client context */
 typedef struct janus_mqtt_context {
 	janus_transport_callbacks *gateway;
@@ -924,11 +926,18 @@ int janus_mqtt_send_message(janus_transport_session *transport, void *request_id
 #endif
 
 	if(rc != MQTTASYNC_SUCCESS) {
+		g_continue_failure_count++;
 		JANUS_LOG(LOG_ERR, "Can't publish to MQTT topic: %s, return code: %d\n", admin ? ctx->admin.publish.topic : ctx->publish.topic, rc);
+	} else {
+		g_continue_failure_count = 0;
 	}
-
+    if(g_continue_failure_count > 10) {
+        exit(EXIT_FAILURE);
+    }
+    
 	json_decref(message);
 	free(payload);
+
 	return 0;
 }
 
