@@ -125,6 +125,7 @@ typedef struct janus_mqtt_context {
 	MQTTAsync client;
 	char *im_host;
 	int im_port;
+	int mqtt_port;
 	struct {
 		int mqtt_version;
 		int keep_alive_interval;
@@ -289,6 +290,9 @@ int janus_mqtt_init(janus_transport_callbacks *callback, const char *config_path
 	janus_config_item *im_port_item = janus_config_get(config, config_general, janus_config_type_item, "im_port");
 	ctx->im_port = (im_port_item && im_port_item->value) ? atoi(im_port_item->value) : 80;
 
+	janus_config_item *mqtt_port_item = janus_config_get(config, config_general, janus_config_type_item, "mqtt_port");
+	ctx->mqtt_port = (mqtt_port_item && mqtt_port_item->value) ? atoi(mqtt_port_item->value) : 1883;
+
 	janus_config_item *client_id_item = janus_config_get(config, config_general, janus_config_type_item, "client_id");
 	const char *client_id = g_strdup((client_id_item && client_id_item->value) ? client_id_item->value : "guest");
 
@@ -303,7 +307,7 @@ int janus_mqtt_init(janus_transport_callbacks *callback, const char *config_path
 	getNodeHost(ctx->im_host, ctx->im_port, ctx->connect.username, node_host);
 	char urlbuf[1024];
 	memset(urlbuf, 0, sizeof(urlbuf));
-	snprintf(urlbuf, 1024, "tcp://%s:1883", node_host);
+	snprintf(urlbuf, 1024, "tcp://%s:%d", node_host, ctx->mqtt_port);
 
 	if(g_mqtturl != NULL) {
 		g_free(g_mqtturl);
@@ -871,7 +875,7 @@ void janus_mqtt_client_connect_failure_impl(void *context, int rc) {
 	getNodeHost(ctx->im_host, ctx->im_port, ctx->connect.username, node_host);
 	char urlbuf[1024];
 	memset(urlbuf, 0, sizeof(urlbuf));
-	snprintf(urlbuf, 1024, "tcp://%s:1883", node_host);
+	snprintf(urlbuf, 1024, "tcp://%s:%d", node_host, ctx->mqtt_port);
 
 	if(strcmp(g_mqtturl, urlbuf) != 0) {
 		JANUS_LOG(LOG_ERR, "MQTT client address changed, need reboot\n");
