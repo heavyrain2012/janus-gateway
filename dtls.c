@@ -399,15 +399,15 @@ gint janus_dtls_srtp_init(const char *server_pem, const char *server_key, const 
 #endif
 
 	/* Go on and create the DTLS context */
-// #if JANUS_USE_OPENSSL_PRE_1_1_API && !defined(HAVE_BORINGSSL)
-// #if defined(LIBRESSL_VERSION_NUMBER)
-// 	ssl_ctx = SSL_CTX_new(DTLSv1_method());
-// #else
+#if JANUS_USE_OPENSSL_PRE_1_1_API && !defined(HAVE_BORINGSSL)
+#if defined(LIBRESSL_VERSION_NUMBER)
+	ssl_ctx = SSL_CTX_new(DTLSv1_method());
+#else
 	ssl_ctx = SSL_CTX_new(DTLSv1_2_method());
-// #endif
-// #else
-// 	ssl_ctx = SSL_CTX_new(DTLS_method());
-// #endif
+#endif
+#else
+	ssl_ctx = SSL_CTX_new(DTLS_method());
+#endif
 	if(!ssl_ctx) {
 		JANUS_LOG(LOG_FATAL, "Ops, error creating DTLS context?\n");
 		return -1;
