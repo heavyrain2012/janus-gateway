@@ -367,7 +367,11 @@ int janus_mqtt_init(janus_transport_callbacks *callback, const char *config_path
 	getNodeHost(ctx->im_host, ctx->im_port, ctx->connect.username, node_host);
 	char urlbuf[1024];
 	memset(urlbuf, 0, sizeof(urlbuf));
-	snprintf(urlbuf, 1024, "tcp://%s:%d", node_host, ctx->mqtt_port);
+	if(strstr(node_host, ":") != NULL) {
+		snprintf(urlbuf, 1024, "tcp://%s", node_host);
+	} else {
+		snprintf(urlbuf, 1024, "tcp://%s:%d", node_host, ctx->mqtt_port);
+	}
 
 	if(g_mqtturl != NULL) {
 		g_free(g_mqtturl);
@@ -942,7 +946,7 @@ int janus_mqtt_send_message(janus_transport_session *transport, void *request_id
     if(g_continue_failure_count > 10) {
         exit(EXIT_FAILURE);
     }
-    
+
 	json_decref(message);
 	free(payload);
 
@@ -1289,7 +1293,7 @@ void janus_mqtt_client_connect_failure_impl(void *context, int rc) {
 	char urlbuf[1024];
 	memset(urlbuf, 0, sizeof(urlbuf));
 	if(strstr(node_host, ":") != NULL) {
-		snprintf(urlbuf, 1024, "tcp://%s", node_host);	
+		snprintf(urlbuf, 1024, "tcp://%s", node_host);
 	} else {
 		snprintf(urlbuf, 1024, "tcp://%s:%d", node_host, ctx->mqtt_port);
 	}
