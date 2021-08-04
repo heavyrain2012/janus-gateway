@@ -1288,7 +1288,12 @@ void janus_mqtt_client_connect_failure_impl(void *context, int rc) {
 	getNodeHost(ctx->im_host, ctx->im_port, ctx->connect.username, node_host);
 	char urlbuf[1024];
 	memset(urlbuf, 0, sizeof(urlbuf));
-	snprintf(urlbuf, 1024, "tcp://%s:%d", node_host, ctx->mqtt_port);
+	if(strstr(node_host, ":") != NULL) {
+		snprintf(urlbuf, 1024, "tcp://%s", node_host);	
+	} else {
+		snprintf(urlbuf, 1024, "tcp://%s:%d", node_host, ctx->mqtt_port);
+	}
+
 
 	if(strcmp(g_mqtturl, urlbuf) != 0) {
 		JANUS_LOG(LOG_ERR, "MQTT client address changed, need reboot\n");
