@@ -1283,7 +1283,7 @@ void janus_mqtt_client_connect_failure5(void *context, MQTTAsync_failureData5 *r
 void janus_mqtt_client_connect_failure_impl(void *context, int rc) {
 	JANUS_LOG(LOG_ERR, "MQTT client has failed connecting to the broker, return code: %d. Reconnecting...\n", rc);
 	/* Automatic reconnect */
-
+#if 0
 	/* Notify handlers about this transport failure */
 	janus_mqtt_context *ctx = (janus_mqtt_context *)context;
 
@@ -1310,6 +1310,11 @@ void janus_mqtt_client_connect_failure_impl(void *context, int rc) {
 		json_object_set_new(info, "code", json_integer(rc));
 		ctx->gateway->notify_event(&janus_mqtt_transport_, mqtt_session, info);
 	}
+#else
+	sleep(10);
+	JANUS_LOG(LOG_ERR, "Reboot to connect mqtt client!\n");
+	exit(-1);
+#endif
 }
 
 int janus_mqtt_client_reconnect(janus_mqtt_context *ctx) {
