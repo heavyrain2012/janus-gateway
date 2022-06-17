@@ -6075,7 +6075,7 @@ static json_t *janus_videoroom_process_synchronous_request(janus_videoroom_sessi
 
 				if(found)
 					json_object_set_new(pl, "talking", talking ? json_true() : json_false());
-				json_object_set_new(info, "streams", media);
+				json_object_set_new(pl, "streams", media);
 			}
 			json_array_append_new(list, pl);
 		}
