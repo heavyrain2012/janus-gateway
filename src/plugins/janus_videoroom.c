@@ -6680,6 +6680,7 @@ static json_t *janus_videoroom_process_synchronous_request(janus_videoroom_sessi
 			if(g_atomic_int_get(&p->session->started)) {
 				gboolean found = FALSE, talking = FALSE;
 				GList *temp = p->streams;
+				json_t *media = json_array();
 				while(temp) {
 					janus_videoroom_publisher_stream *ps = (janus_videoroom_publisher_stream *)temp->data;
 					if(ps && ps->type == JANUS_VIDEOROOM_MEDIA_AUDIO &&
@@ -6688,9 +6689,34 @@ static json_t *janus_videoroom_process_synchronous_request(janus_videoroom_sessi
 						talking |= ps->talking;
 					}
 					temp = temp->next;
+
+    			json_t *mediainfo = json_object();
+    			json_object_set_new(mediainfo, "type", json_string(janus_videoroom_media_str(ps->type)));
+    			json_object_set_new(mediainfo, "mindex", json_integer(ps->mindex));
+    			json_object_set_new(mediainfo, "mid", json_string(ps->mid));
+    			if(ps->disabled) {
+    				json_object_set_new(mediainfo, "disabled", json_true());
+    			} else {
+    				if(ps->description)
+    					json_object_set_new(mediainfo, "description", json_string(ps->description));
+    				if(ps->type == JANUS_VIDEOROOM_MEDIA_AUDIO) {
+    					json_object_set_new(mediainfo, "codec", json_string(janus_audiocodec_name(ps->acodec)));
+    				} else if(ps->type == JANUS_VIDEOROOM_MEDIA_VIDEO) {
+    					json_object_set_new(mediainfo, "codec", json_string(janus_videocodec_name(ps->vcodec)));
+    					if(ps->muted)
+    						json_object_set_new(mediainfo, "moderated", json_true());
+    					if(ps->simulcast)
+    						json_object_set_new(mediainfo, "simulcast", json_true());
+    					if(ps->svc)
+    						json_object_set_new(mediainfo, "svc", json_true());
+    				}
+    			}
+    			json_array_append_new(media, mediainfo);
 				}
+
 				if(found)
 					json_object_set_new(pl, "talking", talking ? json_true() : json_false());
+				json_object_set_new(pl, "streams", media);
 			}
 			json_array_append_new(list, pl);
 		}
