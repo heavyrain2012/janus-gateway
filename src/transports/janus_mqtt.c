@@ -1984,8 +1984,6 @@ int getNodeHost(const char* host, int port, const char* client, char* content) {
       }
     }
 
-    JANUS_LOG(LOG_INFO, "receive content is %s\n", content);
-
     if (nbytes_total == -1) {
         perror("read");
         return -1;
