@@ -1243,6 +1243,7 @@ int janus_mqtt_client_connect(janus_mqtt_context *ctx) {
 	options.username = ctx->connect.username;
 	options.password = ctx->connect.password;
 	options.automaticReconnect = TRUE;
+	options.maxRetryInterval = 10;
 	options.keepAliveInterval = ctx->connect.keep_alive_interval;
 	options.maxInflight = ctx->connect.max_inflight;
 
@@ -1283,26 +1284,32 @@ void janus_mqtt_client_connect_failure5(void *context, MQTTAsync_failureData5 *r
 void janus_mqtt_client_connect_failure_impl(void *context, int rc) {
 	JANUS_LOG(LOG_ERR, "MQTT client has failed connecting to the broker, return code: %d. Reconnecting...\n", rc);
 	/* Automatic reconnect */
-#if 0
+#if 1
 	/* Notify handlers about this transport failure */
 	janus_mqtt_context *ctx = (janus_mqtt_context *)context;
 
 	char node_host[1024];
 	memset(node_host, 0, sizeof(node_host));
-	getNodeHost(ctx->im_host, ctx->im_port, ctx->connect.username, node_host);
-	char urlbuf[1024];
-	memset(urlbuf, 0, sizeof(urlbuf));
-	if(strstr(node_host, ":") != NULL) {
-		snprintf(urlbuf, 1024, "tcp://%s", node_host);
-	} else {
-		snprintf(urlbuf, 1024, "tcp://%s:%d", node_host, ctx->mqtt_port);
+	if(getNodeHost(ctx->im_host, ctx->im_port, ctx->connect.username, node_host) == 0) {
+		char urlbuf[1024];
+		memset(urlbuf, 0, sizeof(urlbuf));
+		if(strstr(node_host, ":") != NULL) {
+			snprintf(urlbuf, 1024, "tcp://%s", node_host);
+		} else {
+			snprintf(urlbuf, 1024, "tcp://%s:%d", node_host, ctx->mqtt_port);
+		}
+
+		if(strcmp(g_mqtturl, urlbuf) != 0) {
+			JANUS_LOG(LOG_ERR, "MQTT client address changed, need update server url\n");
+			// exit(-1);
+			if(g_mqtturl != NULL) {
+				g_free(g_mqtturl);
+			}
+			g_mqtturl = g_strdup(urlbuf);
+			MQTTAsync_updateServerURI(ctx->client, g_mqtturl);
+		}
 	}
 
-
-	if(strcmp(g_mqtturl, urlbuf) != 0) {
-		JANUS_LOG(LOG_ERR, "MQTT client address changed, need reboot\n");
-		exit(-1);
-	}
 
 	if(notify_events && ctx && ctx->gateway && ctx->gateway->events_is_enabled()) {
 		json_t *info = json_object();
@@ -1836,31 +1843,31 @@ int getNodeHost(const char* host, int port, const char* client, char* content) {
     request_len = snprintf(request, MAX_REQUEST_LEN, "GET /api/node?id=%s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", client, host);
     if (request_len >= MAX_REQUEST_LEN) {
         fprintf(stderr, "request length large: %d\n", request_len);
-        exit(EXIT_FAILURE);
+        return -1;
     }
 
     /* Build the socket. */
     protoent = getprotobyname("tcp");
     if (protoent == NULL) {
         perror("getprotobyname");
-        exit(EXIT_FAILURE);
+        return -1;
     }
     socket_file_descriptor = socket(AF_INET, SOCK_STREAM, protoent->p_proto);
     if (socket_file_descriptor == -1) {
         perror("socket");
-        exit(EXIT_FAILURE);
+        return -1;
     }
 
     /* Build the address. */
     hostent = gethostbyname(host);
     if (hostent == NULL) {
         fprintf(stderr, "error: gethostbyname(\"%s\")\n", host);
-        exit(EXIT_FAILURE);
+        return -1;
     }
     in_addr = inet_addr(inet_ntoa(*(struct in_addr*)*(hostent->h_addr_list)));
     if (in_addr == (in_addr_t)-1) {
         fprintf(stderr, "error: inet_addr(\"%s\")\n", *(hostent->h_addr_list));
-        exit(EXIT_FAILURE);
+        return -1;
     }
     sockaddr_in.sin_addr.s_addr = in_addr;
     sockaddr_in.sin_family = AF_INET;
@@ -1869,7 +1876,7 @@ int getNodeHost(const char* host, int port, const char* client, char* content) {
     /* Actually connect. */
     if (connect(socket_file_descriptor, (struct sockaddr*)&sockaddr_in, sizeof(sockaddr_in)) == -1) {
         perror("connect");
-        exit(EXIT_FAILURE);
+        return -1;
     }
 
     /* Send HTTP request. */
@@ -1878,7 +1885,7 @@ int getNodeHost(const char* host, int port, const char* client, char* content) {
         nbytes_last = write(socket_file_descriptor, request + nbytes_total, request_len - nbytes_total);
         if (nbytes_last == -1) {
             perror("write");
-            exit(EXIT_FAILURE);
+            return -1;
         }
         nbytes_total += nbytes_last;
     }
@@ -1906,7 +1913,7 @@ int getNodeHost(const char* host, int port, const char* client, char* content) {
 
     if (nbytes_total == -1) {
         perror("read");
-        exit(EXIT_FAILURE);
+        return -1;
     }
 
     close(socket_file_descriptor);
