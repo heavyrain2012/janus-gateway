@@ -37,6 +37,10 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <arpa/inet.h>
+#include <sys/types.h>
 
 #include <MQTTAsync.h>
 
@@ -141,7 +145,7 @@ static int g_continue_failure_count = 0;
 typedef struct janus_mqtt_context {
 	janus_transport_callbacks *gateway;
 	MQTTAsync client;
-	char *im_host;
+	GList *im_host_list;
 	int im_port;
 	int mqtt_port;
 	struct {
@@ -216,6 +220,7 @@ typedef struct janus_mqtt_set_add_transaction_user_property_user_data {
 
 /* Transport client methods */
 void janus_mqtt_client_connected(void *context, char *cause);
+void janus_mqtt_client_before_reconnect();
 void janus_mqtt_client_connection_lost(void *context, char *cause);
 int janus_mqtt_client_message_arrived(void *context, char *topicName, int topicLen, MQTTAsync_message *message);
 int janus_mqtt_client_connect(janus_mqtt_context *ctx);
@@ -345,7 +350,27 @@ int janus_mqtt_init(janus_transport_callbacks *callback, const char *config_path
 	// const char *url = g_strdup((url_item && url_item->value) ? url_item->value : "tcp://localhost:1883");
 
 	janus_config_item *im_host_item = janus_config_get(config, config_general, janus_config_type_item, "im_host");
-	ctx->im_host = g_strdup((im_host_item && im_host_item->value) ? im_host_item->value : "localhost");
+	ctx->im_host_list = NULL;
+
+	if(im_host_item && im_host_item->value) {
+		gchar **list = g_strsplit(im_host_item->value, ",", -1);
+		gchar *index = list[0];
+		if(index != NULL) {
+			int i=0;
+			while(index != NULL) {
+				if(strlen(index) > 0) {
+					JANUS_LOG(LOG_INFO, "Adding '%s' to the im host list...\n", index);
+					ctx->im_host_list = g_list_append(ctx->im_host_list, (gpointer)g_strdup(index));
+				}
+				i++;
+				index = list[i];
+			}
+		}
+		g_clear_pointer(&list, g_strfreev);
+	} else {
+		ctx->im_host_list = g_list_append(ctx->im_host_list, (gpointer)g_strdup("localhost"));
+	}
+
 
 	janus_config_item *im_port_item = janus_config_get(config, config_general, janus_config_type_item, "im_port");
 	ctx->im_port = (im_port_item && im_port_item->value) ? atoi(im_port_item->value) : 80;
@@ -363,21 +388,32 @@ int janus_mqtt_init(janus_transport_callbacks *callback, const char *config_path
 	ctx->connect.password = g_strdup((client_id_item && client_id_item->value) ? client_id_item->value : "guest");
 
 	char node_host[1024];
-	memset(node_host, 0, sizeof(node_host));
-	getNodeHost(ctx->im_host, ctx->im_port, ctx->connect.username, node_host);
-	char urlbuf[1024];
-	memset(urlbuf, 0, sizeof(urlbuf));
-	if(strstr(node_host, ":") != NULL) {
-		snprintf(urlbuf, 1024, "tcp://%s", node_host);
-	} else {
-		snprintf(urlbuf, 1024, "tcp://%s:%d", node_host, ctx->mqtt_port);
+	GList *tmp = ctx->im_host_list;
+	while(tmp) {
+		memset(node_host, 0, sizeof(node_host));
+		char *p = (char *)tmp->data;
+		if(getNodeHost(p, ctx->im_port, ctx->connect.username, node_host) == 0) {
+			char urlbuf[1024];
+			memset(urlbuf, 0, sizeof(urlbuf));
+			if(strstr(node_host, ":") != NULL) {
+				snprintf(urlbuf, 1024, "tcp://%s", node_host);
+			} else {
+				snprintf(urlbuf, 1024, "tcp://%s:%d", node_host, ctx->mqtt_port);
+			}
+
+			if(g_mqtturl != NULL) {
+				g_free(g_mqtturl);
+			}
+			g_mqtturl = g_strdup(urlbuf);
+			break;
+		}
+		tmp = tmp->next;
 	}
 
-	if(g_mqtturl != NULL) {
-		g_free(g_mqtturl);
+	if(strlen(node_host) == 0) {
+		JANUS_LOG(LOG_ERR, "No available im server, exist...\n");
+		exit(-1);
 	}
-	g_mqtturl = g_strdup(urlbuf);
-
 
 	janus_config_item *json_item = janus_config_get(config, config_general, janus_config_type_item, "json");
 	if(json_item && json_item->value) {
@@ -753,6 +789,11 @@ int janus_mqtt_init(janus_transport_callbacks *callback, const char *config_path
 		goto error;
 	}
 
+	if(MQTTAsync_setBeforeReconnectCallback(ctx->client, ctx, janus_mqtt_client_before_reconnect) != MQTTASYNC_SUCCESS) {
+		JANUS_LOG(LOG_FATAL, "Can't connect to MQTT broker: error setting up before reconnected callback...\n");
+		goto error;
+	}
+
 #ifdef MQTTVERSION_5
 	if(MQTTAsync_setDisconnected(ctx->client, ctx, janus_mqtt_client_disconnected5) != MQTTASYNC_SUCCESS) {
 		JANUS_LOG(LOG_FATAL, "Can't connect to MQTT broker: error setting up disconnected callback...\n");
@@ -1111,6 +1152,39 @@ plugin_response:
 		}
 }
 
+void janus_mqtt_client_before_reconnect() {
+	janus_mqtt_context *ctx = (janus_mqtt_context *)context_;
+
+	char node_host[1024];
+	GList *tmp = ctx->im_host_list;
+	JANUS_LOG(LOG_INFO, "MQTT client update server uri before reconnect url\n");
+	while(tmp) {
+		memset(node_host, 0, sizeof(node_host));
+		char *p = (char *)tmp->data;
+		if(getNodeHost(p, ctx->im_port, ctx->connect.username, node_host) == 0) {
+			char urlbuf[1024];
+			memset(urlbuf, 0, sizeof(urlbuf));
+			if(strstr(node_host, ":") != NULL) {
+				snprintf(urlbuf, 1024, "tcp://%s", node_host);
+			} else {
+				snprintf(urlbuf, 1024, "tcp://%s:%d", node_host, ctx->mqtt_port);
+			}
+
+			if(strcmp(g_mqtturl, urlbuf) != 0) {
+				JANUS_LOG(LOG_ERR, "MQTT client address changed, need update server url\n");
+				// exit(-1);
+				if(g_mqtturl != NULL) {
+					g_free(g_mqtturl);
+				}
+				g_mqtturl = g_strdup(urlbuf);
+				MQTTAsync_updateServerURI(ctx->client, g_mqtturl);
+			}
+			break;
+		}
+		tmp = tmp->next;
+	}
+}
+
 void janus_mqtt_client_connected(void *context, char *cause) {
 	JANUS_LOG(LOG_INFO, "Connected to MQTT broker: %s\n", cause);
 	janus_mqtt_context *ctx = (janus_mqtt_context *)context;
@@ -1243,6 +1317,8 @@ int janus_mqtt_client_connect(janus_mqtt_context *ctx) {
 	options.username = ctx->connect.username;
 	options.password = ctx->connect.password;
 	options.automaticReconnect = TRUE;
+	options.maxRetryInterval = 10;
+	options.connectTimeout = 5;
 	options.keepAliveInterval = ctx->connect.keep_alive_interval;
 	options.maxInflight = ctx->connect.max_inflight;
 
@@ -1283,27 +1359,9 @@ void janus_mqtt_client_connect_failure5(void *context, MQTTAsync_failureData5 *r
 void janus_mqtt_client_connect_failure_impl(void *context, int rc) {
 	JANUS_LOG(LOG_ERR, "MQTT client has failed connecting to the broker, return code: %d. Reconnecting...\n", rc);
 	/* Automatic reconnect */
-#if 0
+#if 1
 	/* Notify handlers about this transport failure */
 	janus_mqtt_context *ctx = (janus_mqtt_context *)context;
-
-	char node_host[1024];
-	memset(node_host, 0, sizeof(node_host));
-	getNodeHost(ctx->im_host, ctx->im_port, ctx->connect.username, node_host);
-	char urlbuf[1024];
-	memset(urlbuf, 0, sizeof(urlbuf));
-	if(strstr(node_host, ":") != NULL) {
-		snprintf(urlbuf, 1024, "tcp://%s", node_host);
-	} else {
-		snprintf(urlbuf, 1024, "tcp://%s:%d", node_host, ctx->mqtt_port);
-	}
-
-
-	if(strcmp(g_mqtturl, urlbuf) != 0) {
-		JANUS_LOG(LOG_ERR, "MQTT client address changed, need reboot\n");
-		exit(-1);
-	}
-
 	if(notify_events && ctx && ctx->gateway && ctx->gateway->events_is_enabled()) {
 		json_t *info = json_object();
 		json_object_set_new(info, "event", json_string("failed"));
@@ -1818,6 +1876,24 @@ void janus_mqtt_transaction_state_free(gpointer state_ptr) {
 }
 #endif
 
+int set_socket_timeout(int sockfd, int timeout_sec) {
+    struct timeval timeout;
+    timeout.tv_sec = timeout_sec;
+    timeout.tv_usec = 0;
+
+    if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout, sizeof(timeout)) < 0) {
+        perror("setsockopt(RCVTIMEO) failed");
+        return -1;
+    }
+
+    if (setsockopt(sockfd, SOL_SOCKET, SO_SNDTIMEO, (char *)&timeout, sizeof(timeout)) < 0) {
+        perror("setsockopt(SNDTIMEO) failed");
+        return -1;
+    }
+
+    return 0;
+}
+
 int getNodeHost(const char* host, int port, const char* client, char* content) {
     char buffer[BUFSIZ];
     char result[1024];
@@ -1836,40 +1912,46 @@ int getNodeHost(const char* host, int port, const char* client, char* content) {
     request_len = snprintf(request, MAX_REQUEST_LEN, "GET /api/node?id=%s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", client, host);
     if (request_len >= MAX_REQUEST_LEN) {
         fprintf(stderr, "request length large: %d\n", request_len);
-        exit(EXIT_FAILURE);
+        return -1;
     }
 
     /* Build the socket. */
     protoent = getprotobyname("tcp");
     if (protoent == NULL) {
         perror("getprotobyname");
-        exit(EXIT_FAILURE);
+        return -1;
     }
     socket_file_descriptor = socket(AF_INET, SOCK_STREAM, protoent->p_proto);
     if (socket_file_descriptor == -1) {
         perror("socket");
-        exit(EXIT_FAILURE);
+        return -1;
     }
 
     /* Build the address. */
     hostent = gethostbyname(host);
     if (hostent == NULL) {
         fprintf(stderr, "error: gethostbyname(\"%s\")\n", host);
-        exit(EXIT_FAILURE);
+        return -1;
     }
     in_addr = inet_addr(inet_ntoa(*(struct in_addr*)*(hostent->h_addr_list)));
     if (in_addr == (in_addr_t)-1) {
         fprintf(stderr, "error: inet_addr(\"%s\")\n", *(hostent->h_addr_list));
-        exit(EXIT_FAILURE);
+        return -1;
     }
     sockaddr_in.sin_addr.s_addr = in_addr;
     sockaddr_in.sin_family = AF_INET;
     sockaddr_in.sin_port = htons(server_port);
 
+		// 设置连接超时
+    if (set_socket_timeout(socket_file_descriptor, 5) < 0) {
+        close(socket_file_descriptor);
+        return -1;
+    }
+
     /* Actually connect. */
     if (connect(socket_file_descriptor, (struct sockaddr*)&sockaddr_in, sizeof(sockaddr_in)) == -1) {
         perror("connect");
-        exit(EXIT_FAILURE);
+        return -1;
     }
 
     /* Send HTTP request. */
@@ -1878,7 +1960,7 @@ int getNodeHost(const char* host, int port, const char* client, char* content) {
         nbytes_last = write(socket_file_descriptor, request + nbytes_total, request_len - nbytes_total);
         if (nbytes_last == -1) {
             perror("write");
-            exit(EXIT_FAILURE);
+            return -1;
         }
         nbytes_total += nbytes_last;
     }
@@ -1902,11 +1984,9 @@ int getNodeHost(const char* host, int port, const char* client, char* content) {
       }
     }
 
-    JANUS_LOG(LOG_INFO, "receive content is %s\n", content);
-
     if (nbytes_total == -1) {
         perror("read");
-        exit(EXIT_FAILURE);
+        return -1;
     }
 
     close(socket_file_descriptor);
