@@ -1933,6 +1933,7 @@ static struct janus_json_parameter create_parameters[] = {
 	{"lock_record", JANUS_JSON_BOOL, 0},
 	{"permanent", JANUS_JSON_BOOL, 0},
 	{"notify_joining", JANUS_JSON_BOOL, 0},
+	{"combine_notify", JANUS_JSON_BOOL, 0},
 	{"require_e2ee", JANUS_JSON_BOOL, 0},
 	{"dummy_publisher", JANUS_JSON_BOOL, 0},
 	{"dummy_streams", JANUS_JSON_ARRAY, 0},
@@ -2357,6 +2358,7 @@ typedef struct janus_videoroom {
 	gboolean check_allowed;		/* Whether to check tokens when participants join (see below) */
 	GHashTable *allowed;		/* Map of participants (as tokens) allowed to join */
 	gboolean notify_joining;	/* Whether an event is sent to notify all participants if a new participant joins the room */
+	gboolean combine_notify; /* Whether combine notify to all member in a room */
 	int helper_threads;			/* Number of helper threads for relaying purposes */
 	GList *threads;				/* List of helper threads, if any */
 	janus_mutex mutex;			/* Mutex to lock this room instance */
@@ -3788,6 +3790,7 @@ int janus_videoroom_init(janus_callbacks *callback, const char *config_path) {
 			janus_config_item *playoutdelay_ext = janus_config_get(config, cat, janus_config_type_item, "playoutdelay_ext");
 			janus_config_item *transport_wide_cc_ext = janus_config_get(config, cat, janus_config_type_item, "transport_wide_cc_ext");
 			janus_config_item *notify_joining = janus_config_get(config, cat, janus_config_type_item, "notify_joining");
+			janus_config_item *combine_notify = janus_config_get(config, cat, janus_config_type_item, "combine_notify");
 			janus_config_item *req_e2ee = janus_config_get(config, cat, janus_config_type_item, "require_e2ee");
 			janus_config_item *dummy_pub = janus_config_get(config, cat, janus_config_type_item, "dummy_publisher");
 			janus_config_item *dummy_str = janus_config_get(config, cat, janus_config_type_array, "dummy_streams");
@@ -4001,6 +4004,11 @@ int janus_videoroom_init(janus_callbacks *callback, const char *config_path) {
 			videoroom->notify_joining = FALSE;
 			if(notify_joining != NULL && notify_joining->value != NULL)
 				videoroom->notify_joining = janus_is_true(notify_joining->value);
+
+			videoroom->combine_notify = FALSE;
+			if(combine_notify != NULL && combine_notify->value != NULL)
+				videoroom->combine_notify = janus_is_true(combine_notify->value);
+
 			g_atomic_int_set(&videoroom->destroyed, 0);
 			janus_mutex_init(&videoroom->mutex);
 			janus_refcount_init(&videoroom->ref, janus_videoroom_room_free);
@@ -4290,6 +4298,7 @@ static janus_videoroom_subscriber *janus_videoroom_session_get_subscriber_nodebu
 	return subscriber;
 }
 
+extern int janus_plugin_get_handle_and_session_id(janus_plugin_session *plugin_session, guint64 *handleId, guint64 *sessionId);
 static void janus_videoroom_notify_participants(janus_videoroom_publisher *participant, json_t *msg, gboolean notify_source_participant) {
 	/* participant->room->mutex has to be locked. */
 	if(participant->room == NULL)
@@ -4297,6 +4306,45 @@ static void janus_videoroom_notify_participants(janus_videoroom_publisher *parti
 	GHashTableIter iter;
 	gpointer value;
 	g_hash_table_iter_init(&iter, participant->room->participants);
+
+	if(participant->room && !g_atomic_int_get(&participant->room->destroyed) && participant->room->combine_notify) {
+		/* Reference the payload, as the plugin may still need it and will do a decref itself */
+		json_incref(msg);
+		json_t *events = json_object();
+		json_object_set_new(events, "msg", msg);
+		//json_object_set_new(events, "room", string_ids ? json_string(participant->room_id_str) : json_integer(participant->room_id));
+		json_t *list = json_array();
+		janus_plugin_session *available_plugin_session = NULL;
+		while (participant->room && !g_atomic_int_get(&participant->room->destroyed) && g_hash_table_iter_next(&iter, NULL, &value)) {
+			janus_videoroom_publisher *p = value;
+			if(p && !g_atomic_int_get(&p->destroyed) && p->session && (p != participant || notify_source_participant)) {
+				JANUS_LOG(LOG_VERB, "Add participant %s (%s)\n", p->user_id_str, p->display ? p->display : "??");
+
+				guint64 handleId = 0;
+				guint64 sessionId = 0;
+				if(janus_plugin_get_handle_and_session_id(p->session->handle, &handleId, &sessionId) != 0) {
+					continue;
+				}
+
+				json_t *info = json_object();
+				json_object_set_new(info, "handle_id", json_integer(handleId));
+				json_object_set_new(info, "session_id", json_integer(sessionId));
+				//json_object_set_new(info, "sender", string_ids ? json_string(p->user_id_str) : json_integer(p->user_id));
+
+				json_array_append_new(list, info);
+				available_plugin_session = p->session->handle;
+			}
+		}
+		
+		json_object_set_new(events, "ps", list);
+		if(available_plugin_session) {
+			int ret = gateway->push_event(available_plugin_session, &janus_videoroom_plugin, NULL, events, NULL);
+			JANUS_LOG(LOG_VERB, "  >> %d (%s)\n", ret, janus_get_api_error(ret));
+		}
+		json_decref(events);
+		return;
+	}
+
 	while (participant->room && !g_atomic_int_get(&participant->room->destroyed) && g_hash_table_iter_next(&iter, NULL, &value)) {
 		janus_videoroom_publisher *p = value;
 		if(p && !g_atomic_int_get(&p->destroyed) && p->session && (p != participant || notify_source_participant) && !participant->dummy) {
@@ -4867,6 +4915,7 @@ static json_t *janus_videoroom_process_synchronous_request(janus_videoroom_sessi
 		json_t *playoutdelay_ext = json_object_get(root, "playoutdelay_ext");
 		json_t *transport_wide_cc_ext = json_object_get(root, "transport_wide_cc_ext");
 		json_t *notify_joining = json_object_get(root, "notify_joining");
+		json_t *combine_notify = json_object_get(root, "combine_notify");
 		json_t *record = json_object_get(root, "record");
 		json_t *rec_dir = json_object_get(root, "rec_dir");
 		json_t *lock_record = json_object_get(root, "lock_record");
@@ -5130,6 +5179,7 @@ static json_t *janus_videoroom_process_synchronous_request(janus_videoroom_sessi
 		/* By default, the VideoRoom plugin does not notify about participants simply joining the room.
 		   It only notifies when the participant actually starts publishing media. */
 		videoroom->notify_joining = notify_joining ? json_is_true(notify_joining) : FALSE;
+		videoroom->combine_notify = combine_notify ? json_is_true(combine_notify) : FALSE;
 		if(record) {
 			videoroom->record = json_is_true(record);
 		}
@@ -5279,6 +5329,8 @@ static json_t *janus_videoroom_process_synchronous_request(janus_videoroom_sessi
 			janus_config_add(config, c, janus_config_item_create("transport_wide_cc_ext", videoroom->transport_wide_cc_ext ? "true" : "false"));
 			if(videoroom->notify_joining)
 				janus_config_add(config, c, janus_config_item_create("notify_joining", "true"));
+			if(videoroom->combine_notify)
+				janus_config_add(config, c, janus_config_item_create("combine_notify", "true"));
 			if(videoroom->record)
 				janus_config_add(config, c, janus_config_item_create("record", "true"));
 			if(videoroom->rec_dir)
@@ -5476,6 +5528,8 @@ static json_t *janus_videoroom_process_synchronous_request(janus_videoroom_sessi
 			janus_config_add(config, c, janus_config_item_create("transport_wide_cc_ext", videoroom->transport_wide_cc_ext ? "true" : "false"));
 			if(videoroom->notify_joining)
 				janus_config_add(config, c, janus_config_item_create("notify_joining", "true"));
+			if(videoroom->combine_notify)
+				janus_config_add(config, c, janus_config_item_create("combine_notify", "true"));
 			if(videoroom->record)
 				janus_config_add(config, c, janus_config_item_create("record", "true"));
 			if(videoroom->rec_dir)
@@ -5652,6 +5706,7 @@ static json_t *janus_videoroom_process_synchronous_request(janus_videoroom_sessi
 				json_object_set_new(rl, "require_e2ee", room->require_e2ee ? json_true() : json_false());
 				json_object_set_new(rl, "dummy_publisher", room->dummy_publisher ? json_true() : json_false());
 				json_object_set_new(rl, "notify_joining", room->notify_joining ? json_true() : json_false());
+				json_object_set_new(rl, "combine_notify", room->combine_notify ? json_true() : json_false());
 				char audio_codecs[100];
 				char video_codecs[100];
 				janus_videoroom_codecstr(room, audio_codecs, video_codecs, sizeof(audio_codecs), ",");

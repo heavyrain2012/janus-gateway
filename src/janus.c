@@ -3661,6 +3661,29 @@ janus_plugin *janus_plugin_find(const gchar *package) {
 	return NULL;
 }
 
+int janus_plugin_get_handle_and_session_id(janus_plugin_session *plugin_session, guint64 *handleId, guint64 *sessionId) {
+	if(!janus_plugin_session_is_alive(plugin_session))
+		return -1;
+	janus_refcount_increase(&plugin_session->ref);
+	janus_ice_handle *ice_handle = (janus_ice_handle *)plugin_session->gateway_handle;
+	if(!ice_handle || janus_flags_is_set(&ice_handle->webrtc_flags, JANUS_ICE_HANDLE_WEBRTC_STOP)) {
+		janus_refcount_decrease(&plugin_session->ref);
+		return -1;
+	}
+	janus_refcount_increase(&ice_handle->ref);
+	janus_session *session = ice_handle->session;
+	if(!session || g_atomic_int_get(&session->destroyed)) {
+		janus_refcount_decrease(&plugin_session->ref);
+		janus_refcount_decrease(&ice_handle->ref);
+		return -1;
+	}
+
+	*handleId = ice_handle->handle_id;
+	*sessionId = session->session_id;
+	janus_refcount_decrease(&plugin_session->ref);
+	janus_refcount_decrease(&ice_handle->ref);
+	return 0;
+}
 
 /* Plugin callback interface */
 int janus_plugin_push_event(janus_plugin_session *plugin_session, janus_plugin *plugin, const char *transaction, json_t *message, json_t *jsep) {
