@@ -4315,6 +4315,8 @@ static void janus_videoroom_notify_participants(janus_videoroom_publisher *parti
 		//json_object_set_new(events, "room", string_ids ? json_string(participant->room_id_str) : json_integer(participant->room_id));
 		json_t *list = json_array();
 		janus_plugin_session *available_plugin_session = NULL;
+		janus_plugin_session *available_plugin_session2 = NULL;
+		janus_plugin_session *available_plugin_session3 = NULL;
 		while (participant->room && !g_atomic_int_get(&participant->room->destroyed) && g_hash_table_iter_next(&iter, NULL, &value)) {
 			janus_videoroom_publisher *p = value;
 			if(p && !g_atomic_int_get(&p->destroyed) && p->session && (p != participant || notify_source_participant)) {
@@ -4327,19 +4329,36 @@ static void janus_videoroom_notify_participants(janus_videoroom_publisher *parti
 				}
 
 				json_t *info = json_object();
-				json_object_set_new(info, "handle_id", json_integer(handleId));
-				json_object_set_new(info, "session_id", json_integer(sessionId));
-				//json_object_set_new(info, "sender", string_ids ? json_string(p->user_id_str) : json_integer(p->user_id));
+				//当有大量成员时，使用简单key值能降低部分数据大小。这里用u作为userId，s作为sessionId，h作为handleId的key值。
+				json_object_set_new(info, "h", json_integer(handleId));
+				json_object_set_new(info, "s", json_integer(sessionId));
+				json_object_set_new(info, "u", string_ids ? json_string(p->user_id_str) : json_integer(p->user_id));
 
 				json_array_append_new(list, info);
+				available_plugin_session3 = available_plugin_session2;
+				available_plugin_session2 = available_plugin_session;
 				available_plugin_session = p->session->handle;
 			}
 		}
-		
+
 		json_object_set_new(events, "ps", list);
 		if(available_plugin_session) {
+		    JANUS_LOG(LOG_INFO, "Send notifications\n");
 			int ret = gateway->push_event(available_plugin_session, &janus_videoroom_plugin, NULL, events, NULL);
-			JANUS_LOG(LOG_VERB, "  >> %d (%s)\n", ret, janus_get_api_error(ret));
+		    JANUS_LOG(LOG_VERB, "  >> %d (%s)\n", ret, janus_get_api_error(ret));
+
+		    if(ret != JANUS_OK && ret != -1) {
+		        if(available_plugin_session2) {
+		            JANUS_LOG(LOG_INFO, "Send notifications failure, retry!\n");
+		            int ret = gateway->push_event(available_plugin_session2, &janus_videoroom_plugin, NULL, events, NULL);
+		            if(ret != JANUS_OK && ret != -1) {
+		                if(available_plugin_session3) {
+		                    JANUS_LOG(LOG_INFO, "Send notifications failure, retry again!\n");
+                            gateway->push_event(available_plugin_session3, &janus_videoroom_plugin, NULL, events, NULL);
+						}
+					}
+				}
+			}
 		}
 		json_decref(events);
 		return;
