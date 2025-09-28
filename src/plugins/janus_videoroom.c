@@ -4298,6 +4298,50 @@ static janus_videoroom_subscriber *janus_videoroom_session_get_subscriber_nodebu
 	return subscriber;
 }
 
+// Base64编码表
+static const char base64_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                                  "abcdefghijklmnopqrstuvwxyz"
+                                  "0123456789+/";
+
+// 计算Base64编码后的长度
+static size_t base64_encoded_length(size_t input_len) {
+    return (input_len + 2) / 3 * 4;
+}
+
+// Base64编码实现
+static void base64_encode(const unsigned char *input, size_t input_len, char *output)
+{
+    size_t i = 0, j = 0;
+    unsigned char three_bytes[3];
+    unsigned char four_chars[4];
+
+    while (input_len) {
+        size_t n = input_len > 3 ? 3 : input_len;   /* 本次实际有效字节数 */
+
+        three_bytes[0] = input[i++];
+        three_bytes[1] = n > 1 ? input[i++] : 0;
+        three_bytes[2] = n > 2 ? input[i++] : 0;
+
+        four_chars[0] = (three_bytes[0] & 0xfc) >> 2;
+        four_chars[1] = ((three_bytes[0] & 0x03) << 4) | ((three_bytes[1] & 0xf0) >> 4);
+        four_chars[2] = ((three_bytes[1] & 0x0f) << 2) | ((three_bytes[2] & 0xc0) >> 6);
+        four_chars[3] =  three_bytes[2] & 0x3f;
+
+        output[j++] = base64_chars[four_chars[0]];
+        output[j++] = base64_chars[four_chars[1]];
+        output[j++] = n > 1 ? base64_chars[four_chars[2]] : '=';
+        output[j++] = n > 2 ? base64_chars[four_chars[3]] : '=';
+
+        input_len -= n;
+    }
+    output[j] = '\0';
+}
+
+// 释放GList中存储的int64_t数据
+static void free_int64(gpointer data) {
+    g_free(data);
+}
+
 extern int janus_plugin_get_handle_and_session_id(janus_plugin_session *plugin_session, guint64 *handleId, guint64 *sessionId);
 static void janus_videoroom_notify_participants(janus_videoroom_publisher *participant, json_t *msg, gboolean notify_source_participant) {
 	/* participant->room->mutex has to be locked. */
@@ -4313,7 +4357,8 @@ static void janus_videoroom_notify_participants(janus_videoroom_publisher *parti
 		json_t *events = json_object();
 		json_object_set_new(events, "msg", msg);
 		//json_object_set_new(events, "room", string_ids ? json_string(participant->room_id_str) : json_integer(participant->room_id));
-		json_t *list = json_array();
+    // 创建GList链表
+    GList *list = NULL;
 		janus_plugin_session *available_plugin_session = NULL;
 		janus_plugin_session *available_plugin_session2 = NULL;
 		janus_plugin_session *available_plugin_session3 = NULL;
@@ -4328,20 +4373,55 @@ static void janus_videoroom_notify_participants(janus_videoroom_publisher *parti
 					continue;
 				}
 
-				json_t *info = json_object();
-				//当有大量成员时，使用简单key值能降低部分数据大小。这里用u作为userId，s作为sessionId，h作为handleId的key值。
-				json_object_set_new(info, "h", json_integer(handleId));
-				json_object_set_new(info, "s", json_integer(sessionId));
-				json_object_set_new(info, "u", string_ids ? json_string(p->user_id_str) : json_integer(p->user_id));
+        JANUS_LOG(LOG_ERR, "Notifying participant ids: %"SCNu64", %"SCNu64"\n", sessionId, handleId);
 
-				json_array_append_new(list, info);
+        guint64 *num = g_new(guint64, 1);
+        *num = sessionId;
+        list = g_list_append(list, num);
+
 				available_plugin_session3 = available_plugin_session2;
 				available_plugin_session2 = available_plugin_session;
 				available_plugin_session = p->session->handle;
 			}
 		}
 
-		json_object_set_new(events, "ps", list);
+    // 计算总字节数（每个int64_t占8字节）
+    size_t total_bytes = g_list_length(list) * sizeof(int64_t);
+
+    // 分配内存存储所有int64_t数据的字节流
+    unsigned char *byte_data = g_malloc(total_bytes);
+    unsigned char *ptr = byte_data;
+
+    // 将GList中的数据复制到字节数组
+    GList *iter = list;
+    while (iter) {
+        guint64 host_value = *(guint64 *)iter->data;
+        JANUS_LOG(LOG_ERR, "host_value: %"SCNu64"\n", host_value);
+        for(int i = 0; i < 8; i++) {
+          guint64 leftSift = host_value >> 8;
+          *(ptr+i) = host_value - (leftSift<<8);
+          host_value = leftSift;
+        }
+        ptr += sizeof(guint64);
+        iter = iter->next;
+    }
+
+    // 计算Base64编码所需的长度并分配内存
+    size_t base64_len = base64_encoded_length(total_bytes) + 1; // +1 用于null终止符
+    char *base64_str = g_malloc(base64_len);
+
+    // 执行Base64编码
+    base64_encode(byte_data, total_bytes, base64_str);
+
+    JANUS_LOG(LOG_ERR, "Notifying participant length: %d, %ld, %ld (%s)\n", g_list_length(list), total_bytes, base64_len, base64_str);
+
+    json_object_set_new(events, "ps", json_string(base64_str));
+
+    // 释放资源
+    g_free(byte_data);
+    g_list_free_full(list, free_int64); // 释放链表及其中的数据
+
+
 		if(available_plugin_session) {
 		    JANUS_LOG(LOG_INFO, "Send notifications\n");
 			int ret = gateway->push_event(available_plugin_session, &janus_videoroom_plugin, NULL, events, NULL);
@@ -4360,6 +4440,7 @@ static void janus_videoroom_notify_participants(janus_videoroom_publisher *parti
 				}
 			}
 		}
+    g_free(base64_str);
 		json_decref(events);
 		return;
 	}
