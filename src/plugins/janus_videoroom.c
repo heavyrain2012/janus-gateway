@@ -4373,8 +4373,6 @@ static void janus_videoroom_notify_participants(janus_videoroom_publisher *parti
 					continue;
 				}
 
-        JANUS_LOG(LOG_ERR, "Notifying participant ids: %"SCNu64", %"SCNu64"\n", sessionId, handleId);
-
         guint64 *num = g_new(guint64, 1);
         *num = sessionId;
         list = g_list_append(list, num);
@@ -4396,7 +4394,6 @@ static void janus_videoroom_notify_participants(janus_videoroom_publisher *parti
     GList *iter = list;
     while (iter) {
         guint64 host_value = *(guint64 *)iter->data;
-        JANUS_LOG(LOG_ERR, "host_value: %"SCNu64"\n", host_value);
         for(int i = 0; i < 8; i++) {
           guint64 leftSift = host_value >> 8;
           *(ptr+i) = host_value - (leftSift<<8);
@@ -4412,8 +4409,6 @@ static void janus_videoroom_notify_participants(janus_videoroom_publisher *parti
 
     // 执行Base64编码
     base64_encode(byte_data, total_bytes, base64_str);
-
-    JANUS_LOG(LOG_ERR, "Notifying participant length: %d, %ld, %ld (%s)\n", g_list_length(list), total_bytes, base64_len, base64_str);
 
     json_object_set_new(events, "ps", json_string(base64_str));
 
