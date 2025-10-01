@@ -613,7 +613,7 @@ void janus_transport_task(gpointer data, gpointer user_data);
  * core is handled here.
  */
 ///@{
-int janus_plugin_push_event(janus_plugin_session *plugin_session, janus_plugin *plugin, const char *transaction, json_t *message, json_t *jsep);
+int janus_plugin_push_event(janus_plugin_session *plugin_session, janus_plugin *plugin, const char *transaction, json_t *message, json_t *jsep, const unsigned char *pbData, size_t pbLength);
 json_t *janus_plugin_handle_sdp(janus_plugin_session *plugin_session, janus_plugin *plugin, const char *sdp_type, const char *sdp, gboolean restart);
 void janus_plugin_relay_rtp(janus_plugin_session *plugin_session, janus_plugin_rtp *packet);
 void janus_plugin_relay_rtcp(janus_plugin_session *plugin_session, janus_plugin_rtcp *packet);
@@ -720,7 +720,7 @@ static gboolean janus_check_sessions(gpointer user_data) {
 					if(source) {
 						json_t *event = janus_create_message("timeout", session->session_id, NULL);
 						/* Send this to the transport client and notify the session's over */
-						source->transport->send_message(source->instance, NULL, FALSE, event);
+						source->transport->send_message(source->instance, NULL, FALSE, event, NULL, 0);
 						source->transport->session_over(source->instance, session->session_id, TRUE, FALSE);
 					}
 					janus_request_unref(source);
@@ -818,13 +818,13 @@ janus_session *janus_session_find(guint64 session_id) {
 	return session;
 }
 
-void janus_session_notify_event(janus_session *session, json_t *event) {
+void janus_session_notify_event(janus_session *session, json_t *event, const unsigned char* pbData, size_t pbLength) {
 	if(session != NULL && !g_atomic_int_get(&session->destroyed)) {
 		janus_request *source = janus_session_get_request(session);
 		if(source != NULL && source->transport != NULL) {
 			/* Send this to the transport client */
 			JANUS_LOG(LOG_HUGE, "Sending event to %s (%p)\n", source->transport->get_package(), source->instance);
-			source->transport->send_message(source->instance, NULL, FALSE, event);
+			source->transport->send_message(source->instance, NULL, FALSE, event, NULL, 0);
 		} else {
 			/* No transport, free the event */
 			json_decref(event);
@@ -3140,7 +3140,7 @@ int janus_process_success(janus_request *request, json_t *payload)
 		return -1;
 	/* Pass to the right transport plugin */
 	JANUS_LOG(LOG_HUGE, "Sending %s API response to %s (%p)\n", request->admin ? "admin" : "Janus", request->transport->get_package(), request->instance);
-	return request->transport->send_message(request->instance, request->request_id, request->admin, payload);
+	return request->transport->send_message(request->instance, request->request_id, request->admin, payload, NULL, 0);
 }
 
 static int janus_process_error_string(janus_request *request, uint64_t session_id, const char *transaction, gint error, gchar *error_string)
@@ -3156,7 +3156,7 @@ static int janus_process_error_string(janus_request *request, uint64_t session_i
 	json_object_set_new(error_data, "reason", json_string(error_string));
 	json_object_set_new(reply, "error", error_data);
 	/* Pass to the right transport plugin */
-	return request->transport->send_message(request->instance, request->request_id, request->admin, reply);
+	return request->transport->send_message(request->instance, request->request_id, request->admin, reply, NULL, 0);
 }
 
 int janus_process_error(janus_request *request, uint64_t session_id, const char *transaction, gint error, const char *format, ...)
@@ -3686,7 +3686,7 @@ int janus_plugin_get_handle_and_session_id(janus_plugin_session *plugin_session,
 }
 
 /* Plugin callback interface */
-int janus_plugin_push_event(janus_plugin_session *plugin_session, janus_plugin *plugin, const char *transaction, json_t *message, json_t *jsep) {
+int janus_plugin_push_event(janus_plugin_session *plugin_session, janus_plugin *plugin, const char *transaction, json_t *message, json_t *jsep, const unsigned char *pbData, size_t pbLength) {
 	if(!plugin || !message)
 		return -1;
 	if(!janus_plugin_session_is_alive(plugin_session))
@@ -3762,7 +3762,7 @@ int janus_plugin_push_event(janus_plugin_session *plugin_session, janus_plugin *
 	}
 	/* Send the event */
 	JANUS_LOG(LOG_VERB, "[%"SCNu64"] Sending event to transport...\n", ice_handle->handle_id);
-	janus_session_notify_event(session, event);
+	janus_session_notify_event(session, event, NULL, 0);
 
 	if((restart || janus_flags_is_set(&ice_handle->webrtc_flags, JANUS_ICE_HANDLE_WEBRTC_RESEND_TRICKLES))
 			&& janus_ice_is_full_trickle_enabled()) {

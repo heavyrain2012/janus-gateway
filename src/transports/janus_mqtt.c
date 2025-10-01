@@ -69,7 +69,7 @@ const char *janus_mqtt_get_author(void);
 const char *janus_mqtt_get_package(void);
 gboolean janus_mqtt_is_janus_api_enabled(void);
 gboolean janus_mqtt_is_admin_api_enabled(void);
-int janus_mqtt_send_message(janus_transport_session *transport, void *request_id, gboolean admin, json_t *message);
+int janus_mqtt_send_message(janus_transport_session *transport, void *request_id, gboolean admin, json_t *message, const unsigned char *pbData, size_t pbLength);
 void janus_mqtt_session_created(janus_transport_session *transport, guint64 session_id);
 void janus_mqtt_session_over(janus_transport_session *transport, guint64 session_id, gboolean timeout, gboolean claimed);
 void janus_mqtt_session_claimed(janus_transport_session *transport, guint64 session_id);
@@ -245,7 +245,7 @@ void janus_mqtt_client_publish_admin_success(void *context, MQTTAsync_successDat
 void janus_mqtt_client_publish_admin_failure(void *context, MQTTAsync_failureData *response);
 void janus_mqtt_client_publish_status_success(void *context, MQTTAsync_successData *response);
 void janus_mqtt_client_publish_status_failure(void *context, MQTTAsync_failureData *response);
-int janus_mqtt_client_publish_message(janus_mqtt_context *ctx, char *payload, gboolean admin);
+int janus_mqtt_client_publish_message(janus_mqtt_context *ctx, char *payload, gboolean admin, const unsigned char *pbData, size_t pbLength);
 int janus_mqtt_client_get_response_code(MQTTAsync_failureData *response);
 #ifdef MQTTVERSION_5
 /* MQTT v5 interface callbacks */
@@ -265,7 +265,7 @@ void janus_mqtt_client_publish_admin_success5(void *context, MQTTAsync_successDa
 void janus_mqtt_client_publish_admin_failure5(void *context, MQTTAsync_failureData5 *response);
 void janus_mqtt_client_publish_status_success5(void *context, MQTTAsync_successData5 *response);
 void janus_mqtt_client_publish_status_failure5(void *context, MQTTAsync_failureData5 *response);
-int janus_mqtt_client_publish_message5(janus_mqtt_context *ctx, char *payload, gboolean admin, MQTTProperties *properties, char *custom_topic);
+int janus_mqtt_client_publish_message5(janus_mqtt_context *ctx, char *payload, gboolean admin, MQTTProperties *properties, char *custom_topic, const unsigned char *pbData, size_t pbLength);
 int janus_mqtt_client_get_response_code5(MQTTAsync_failureData5 *response);
 #endif
 /* MQTT version independent callback implementations */
@@ -930,22 +930,29 @@ gboolean janus_mqtt_is_admin_api_enabled(void) {
 	return janus_mqtt_admin_api_enabled_;
 }
 
-int janus_mqtt_send_message(janus_transport_session *transport, void *request_id, gboolean admin, json_t *message) {
-	if(message == NULL || transport == NULL) return -1;
+int janus_mqtt_send_message(janus_transport_session *transport, void *request_id, gboolean admin, json_t *message, const unsigned char *pbData, size_t pbLength) {
+	if((message == NULL && pbData == NULL) || transport == NULL) return -1;
 
 	/* Not really needed as we always only have a single context, but that's fine */
 	janus_mqtt_context *ctx = (janus_mqtt_context *)transport->transport_p;
 	if(ctx == NULL) {
-		json_decref(message);
+		if(message != NULL) {
+			json_decref(message);
+		}
+
 		return -1;
 	}
 
-	char *payload = json_dumps(message, json_format);
-	if(payload == NULL) {
-		JANUS_LOG(LOG_ERR, "Failed to stringify message...\n");
-		return -1;
+	char *payload = NULL;
+	if(message != NULL) {
+		payload = json_dumps(message, json_format);
+		if(payload == NULL) {
+			JANUS_LOG(LOG_ERR, "Failed to stringify message...\n");
+			return -1;
+		}
 	}
-	JANUS_LOG(LOG_HUGE, "Sending %s API message via MQTT: %s\n", admin ? "admin" : "Janus", payload);
+
+	JANUS_LOG(LOG_HUGE, "Sending %s API message via MQTT: %s\n", admin ? "admin" : "Janus", payload != NULL? payload : "PB data");
 
 	int rc;
 #ifdef MQTTVERSION_5
@@ -968,14 +975,14 @@ int janus_mqtt_send_message(janus_transport_session *transport, void *request_id
 			g_rw_lock_reader_unlock(&janus_mqtt_transaction_states_lock);
 		}
 
-		rc = janus_mqtt_client_publish_message5(ctx, payload, admin, &properties, response_topic);
+		rc = janus_mqtt_client_publish_message5(ctx, payload, admin, &properties, response_topic, pbData, pbLength);
 		if(response_topic != NULL) g_free(response_topic);
 		MQTTProperties_free(&properties);
 	} else {
-		rc = janus_mqtt_client_publish_message(ctx, payload, admin);
+		rc = janus_mqtt_client_publish_message(ctx, payload, admin, pbData, pbLength);
 	}
 #else
-	rc = janus_mqtt_client_publish_message(ctx, payload, admin);
+	rc = janus_mqtt_client_publish_message(ctx, payload, admin, pbData, pbLength);
 #endif
 
 	if(rc != MQTTASYNC_SUCCESS) {
@@ -1628,14 +1635,20 @@ void janus_mqtt_client_admin_subscribe_failure_impl(void *context, int rc) {
 	}
 }
 
-int janus_mqtt_client_publish_message(janus_mqtt_context *ctx, char *payload, gboolean admin) {
+int janus_mqtt_client_publish_message(janus_mqtt_context *ctx, char *payload, gboolean admin, const unsigned char *pbData, size_t pbLength) {
 	MQTTAsync_message msg = MQTTAsync_message_initializer;
-	msg.payload = payload;
-	msg.payloadlen = strlen(payload);
+	char *topic = admin ? ctx->admin.publish.topic : ctx->publish.topic;
+	if(payload) {
+		msg.payload = payload;
+		msg.payloadlen = strlen(payload);
+	} else {
+		msg.payload = pbData;
+		msg.payloadlen = pbLength;
+		topic = "f";
+	}
+
 	msg.qos = ctx->publish.qos;
 	msg.retained = FALSE;
-
-	char *topic = admin ? ctx->admin.publish.topic : ctx->publish.topic;
 
 	MQTTAsync_responseOptions options = MQTTAsync_responseOptions_initializer;
 	options.context = ctx;
@@ -1652,7 +1665,7 @@ int janus_mqtt_client_publish_message(janus_mqtt_context *ctx, char *payload, gb
 }
 
 #ifdef MQTTVERSION_5
-int janus_mqtt_client_publish_message5(janus_mqtt_context *ctx, char *payload, gboolean admin, MQTTProperties *properties, char *custom_topic) {
+int janus_mqtt_client_publish_message5(janus_mqtt_context *ctx, char *payload, gboolean admin, MQTTProperties *properties, char *custom_topic, const unsigned char *pbData, size_t pbLength) {
 	MQTTAsync_message msg = MQTTAsync_message_initializer;
 	msg.payload = payload;
 	msg.payloadlen = strlen(payload);

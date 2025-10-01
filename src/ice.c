@@ -831,7 +831,7 @@ static void janus_ice_notify_trickle(janus_ice_handle *handle, char *buffer) {
 	/* Send the event */
 	JANUS_LOG(LOG_VERB, "[%"SCNu64"] Sending trickle event (%s) to transport...\n",
 		handle->handle_id, buffer ? "candidate" : "end-of-candidates");
-	janus_session_notify_event(session, event);
+	janus_session_notify_event(session, event, NULL, 0);
 }
 
 static void janus_ice_notify_media(janus_ice_handle *handle, char *mid, gboolean video, gboolean simulcast, int substream, gboolean up) {
@@ -858,7 +858,7 @@ static void janus_ice_notify_media(janus_ice_handle *handle, char *mid, gboolean
 		json_object_set_new(event, "seconds", json_integer(no_media_timer));
 	/* Send the event */
 	JANUS_LOG(LOG_VERB, "[%"SCNu64"] Sending event to transport...\n", handle->handle_id);
-	janus_session_notify_event(session, event);
+	janus_session_notify_event(session, event, NULL, 0);
 	/* Notify event handlers as well */
 	if(janus_events_is_enabled()) {
 		json_t *info = json_object();
@@ -890,7 +890,7 @@ static void janus_ice_notify_ice_failed(janus_ice_handle *handle) {
 		json_object_set_new(event, "opaque_id", json_string(handle->opaque_id));
 	/* Send the event */
 	JANUS_LOG(LOG_VERB, "[%"SCNu64"] Sending event to transport...; %p\n", handle->handle_id, handle);
-	janus_session_notify_event(session, event);
+	janus_session_notify_event(session, event, NULL, 0);
 }
 
 void janus_ice_notify_hangup(janus_ice_handle *handle, const char *reason) {
@@ -911,7 +911,7 @@ void janus_ice_notify_hangup(janus_ice_handle *handle, const char *reason) {
 		json_object_set_new(event, "reason", json_string(reason));
 	/* Send the event */
 	JANUS_LOG(LOG_VERB, "[%"SCNu64"] Sending event to transport...; %p\n", handle->handle_id, handle);
-	janus_session_notify_event(session, event);
+	janus_session_notify_event(session, event, NULL, 0);
 	/* Notify event handlers as well */
 	if(janus_events_is_enabled()) {
 		json_t *info = json_object();
@@ -2001,7 +2001,7 @@ janus_slow_link_update(janus_ice_peerconnection_medium *medium, janus_ice_handle
 			json_object_set_new(event, "lost", json_integer(sl_lost_recently));
 			/* Send the event */
 			JANUS_LOG(LOG_VERB, "[%"SCNu64"] Sending event to transport...; %p\n", handle->handle_id, handle);
-			janus_session_notify_event(session, event);
+			janus_session_notify_event(session, event, NULL, 0);
 			/* Finally, notify event handlers */
 			if(janus_events_is_enabled()) {
 				json_t *info = json_object();
@@ -4638,7 +4638,7 @@ static gboolean janus_ice_outgoing_traffic_handle(janus_ice_handle *handle, janu
 			json_object_set_new(event, "opaque_id", json_string(handle->opaque_id));
 		/* Send the event */
 		JANUS_LOG(LOG_VERB, "[%"SCNu64"] Sending event to transport...; %p\n", handle->handle_id, handle);
-		janus_session_notify_event(session, event);
+		janus_session_notify_event(session, event, NULL, 0);
 		/* Notify event handlers as well */
 		if(janus_events_is_enabled())
 			janus_events_notify_handlers(JANUS_EVENT_TYPE_HANDLE, JANUS_EVENT_SUBTYPE_NONE,
@@ -5290,7 +5290,7 @@ void janus_ice_dtls_handshake_done(janus_ice_handle *handle) {
 		json_object_set_new(event, "opaque_id", json_string(handle->opaque_id));
 	/* Send the event */
 	JANUS_LOG(LOG_VERB, "[%"SCNu64"] Sending event to transport...; %p\n", handle->handle_id, handle);
-	janus_session_notify_event(session, event);
+	janus_session_notify_event(session, event, NULL, 0);
 	/* Notify event handlers as well */
 	if(janus_events_is_enabled()) {
 		json_t *info = json_object();

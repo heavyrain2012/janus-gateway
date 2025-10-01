@@ -366,7 +366,7 @@ struct janus_callbacks {
 	 * @param[in] transaction The transaction identifier this message refers to
 	 * @param[in] message The json_t object containing the JSON message
 	 * @param[in] jsep The json_t object containing the JSEP type, the SDP attached to the message/event, if any (offer/answer), and whether this is an update */
-	int (* const push_event)(janus_plugin_session *handle, janus_plugin *plugin, const char *transaction, json_t *message, json_t *jsep);
+	int (* const push_event)(janus_plugin_session *handle, janus_plugin *plugin, const char *transaction, json_t *message, json_t *jsep, const unsigned char *pbData, size_t pbLength);
 
 	/*! \brief Callback to relay RTP packets to a peer
 	 * @param[in] handle The plugin/gateway session used for this peer

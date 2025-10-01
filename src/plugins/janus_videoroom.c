@@ -4419,17 +4419,17 @@ static void janus_videoroom_notify_participants(janus_videoroom_publisher *parti
 
 		if(available_plugin_session) {
 		    JANUS_LOG(LOG_INFO, "Send notifications\n");
-			int ret = gateway->push_event(available_plugin_session, &janus_videoroom_plugin, NULL, events, NULL);
+			int ret = gateway->push_event(available_plugin_session, &janus_videoroom_plugin, NULL, events, NULL, NULL, 0);
 		    JANUS_LOG(LOG_VERB, "  >> %d (%s)\n", ret, janus_get_api_error(ret));
 
 		    if(ret != JANUS_OK && ret != -1) {
 		        if(available_plugin_session2) {
 		            JANUS_LOG(LOG_INFO, "Send notifications failure, retry!\n");
-		            int ret = gateway->push_event(available_plugin_session2, &janus_videoroom_plugin, NULL, events, NULL);
+		            int ret = gateway->push_event(available_plugin_session2, &janus_videoroom_plugin, NULL, events, NULL, NULL, 0);
 		            if(ret != JANUS_OK && ret != -1) {
 		                if(available_plugin_session3) {
 		                    JANUS_LOG(LOG_INFO, "Send notifications failure, retry again!\n");
-                            gateway->push_event(available_plugin_session3, &janus_videoroom_plugin, NULL, events, NULL);
+                            gateway->push_event(available_plugin_session3, &janus_videoroom_plugin, NULL, events, NULL, NULL, 0);
 						}
 					}
 				}
@@ -4444,7 +4444,7 @@ static void janus_videoroom_notify_participants(janus_videoroom_publisher *parti
 		janus_videoroom_publisher *p = value;
 		if(p && !g_atomic_int_get(&p->destroyed) && p->session && (p != participant || notify_source_participant) && !participant->dummy) {
 			JANUS_LOG(LOG_VERB, "Notifying participant %s (%s)\n", p->user_id_str, p->display ? p->display : "??");
-			int ret = gateway->push_event(p->session->handle, &janus_videoroom_plugin, NULL, msg, NULL);
+			int ret = gateway->push_event(p->session->handle, &janus_videoroom_plugin, NULL, msg, NULL, NULL, 0);
 			JANUS_LOG(LOG_VERB, "  >> %d (%s)\n", ret, janus_get_api_error(ret));
 		}
 	}
@@ -5716,7 +5716,7 @@ static json_t *janus_videoroom_process_synchronous_request(janus_videoroom_sessi
 				g_clear_pointer(&p->room, janus_videoroom_room_dereference);
 				janus_mutex_unlock(&p->mutex);
 				/* Notify the user we're going to destroy the room... */
-				int ret = gateway->push_event(p->session->handle, &janus_videoroom_plugin, NULL, destroyed, NULL);
+				int ret = gateway->push_event(p->session->handle, &janus_videoroom_plugin, NULL, destroyed, NULL, NULL, 0);
 				JANUS_LOG(LOG_VERB, "  >> %d (%s)\n", ret, janus_get_api_error(ret));
 				/* ... and then ask the core to close the PeerConnection */
 				gateway->close_pc(p->session->handle);
@@ -6873,7 +6873,7 @@ static json_t *janus_videoroom_process_synchronous_request(janus_videoroom_sessi
 		json_object_set_new(kicked, "room", string_ids ? json_string(participant->room_id_str) : json_integer(participant->room_id));
 		json_object_set_new(kicked, "leaving", json_string("ok"));
 		json_object_set_new(kicked, "reason", json_string("kicked"));
-		int ret = gateway->push_event(participant->session->handle, &janus_videoroom_plugin, NULL, kicked, NULL);
+		int ret = gateway->push_event(participant->session->handle, &janus_videoroom_plugin, NULL, kicked, NULL, NULL, 0);
 		JANUS_LOG(LOG_VERB, "  >> %d (%s)\n", ret, janus_get_api_error(ret));
 		json_decref(kicked);
 		janus_mutex_unlock(&videoroom->mutex);
@@ -9371,7 +9371,7 @@ void janus_videoroom_slow_link(janus_plugin_session *handle, int mindex, gboolea
 			/* Also add info on what the current bitrate cap is */
 			uint32_t bitrate = publisher->bitrate;
 			json_object_set_new(event, "current-bitrate", json_integer(bitrate));
-			gateway->push_event(session->handle, &janus_videoroom_plugin, NULL, event, NULL);
+			gateway->push_event(session->handle, &janus_videoroom_plugin, NULL, event, NULL, NULL, 0);
 			json_decref(event);
 			janus_refcount_decrease(&publisher->ref);
 		} else {
@@ -9393,7 +9393,7 @@ void janus_videoroom_slow_link(janus_plugin_session *handle, int mindex, gboolea
 			 * up to the application to then choose a policy and enforce it */
 			json_t *event = json_object();
 			json_object_set_new(event, "videoroom", json_string("slow_link"));
-			gateway->push_event(session->handle, &janus_videoroom_plugin, NULL, event, NULL);
+			gateway->push_event(session->handle, &janus_videoroom_plugin, NULL, event, NULL, NULL, 0);
 			json_decref(event);
 			janus_refcount_decrease(&subscriber->ref);
 		} else {
@@ -9622,7 +9622,7 @@ static void janus_videoroom_hangup_media_internal(gpointer session_data) {
 					janus_mutex_unlock(&subscriber->streams_mutex);
 					/* How long will the Janus core take to push the event? */
 					gint64 start = janus_get_monotonic_time();
-					int res = gateway->push_event(subscriber->session->handle, &janus_videoroom_plugin, NULL, event, jsep);
+					int res = gateway->push_event(subscriber->session->handle, &janus_videoroom_plugin, NULL, event, jsep, NULL, 0);
 					JANUS_LOG(LOG_VERB, "  >> Pushing event: %d (took %"SCNu64" us)\n", res, janus_get_monotonic_time()-start);
 					json_decref(event);
 					json_decref(jsep);
@@ -10822,7 +10822,7 @@ static void *janus_videoroom_handler(void *data) {
 				/* How long will the Janus core take to push the event? */
 				g_atomic_int_set(&session->hangingup, 0);
 				gint64 start = janus_get_monotonic_time();
-				int res = gateway->push_event(msg->handle, &janus_videoroom_plugin, msg->transaction, event, jsep);
+				int res = gateway->push_event(msg->handle, &janus_videoroom_plugin, msg->transaction, event, jsep, NULL, 0);
 				JANUS_LOG(LOG_VERB, "  >> Pushing event: %d (took %"SCNu64" us)\n", res, janus_get_monotonic_time()-start);
 				json_decref(event);
 				json_decref(jsep);
@@ -11869,7 +11869,7 @@ static void *janus_videoroom_handler(void *data) {
 						json_string(subscriber->room_id_str) : json_integer(subscriber->room_id));
 					/* How long will the Janus core take to push the event? */
 					gint64 start = janus_get_monotonic_time();
-					int res = gateway->push_event(msg->handle, &janus_videoroom_plugin, msg->transaction, event, NULL);
+					int res = gateway->push_event(msg->handle, &janus_videoroom_plugin, msg->transaction, event, NULL, NULL, 0);
 					JANUS_LOG(LOG_VERB, "  >> Pushing event: %d (took %"SCNu64" us)\n", res, janus_get_monotonic_time()-start);
 					json_decref(event);
 					/* Decrease the references we took before */
@@ -11895,7 +11895,7 @@ static void *janus_videoroom_handler(void *data) {
 					json_object_set_new(event, "videoroom", json_string("updating"));
 					json_object_set_new(event, "room", string_ids ?
 						json_string(subscriber->room_id_str) : json_integer(subscriber->room_id));
-					gateway->push_event(msg->handle, &janus_videoroom_plugin, msg->transaction, event, NULL);
+					gateway->push_event(msg->handle, &janus_videoroom_plugin, msg->transaction, event, NULL, NULL, 0);
 					json_decref(event);
 					/* Decrease the references we took before, if any */
 					while(publishers) {
@@ -11923,7 +11923,7 @@ static void *janus_videoroom_handler(void *data) {
 				janus_mutex_unlock(&subscriber->room->mutex);
 				/* How long will the Janus core take to push the event? */
 				gint64 start = janus_get_monotonic_time();
-				int res = gateway->push_event(msg->handle, &janus_videoroom_plugin, msg->transaction, event, jsep);
+				int res = gateway->push_event(msg->handle, &janus_videoroom_plugin, msg->transaction, event, jsep, NULL, 0);
 				JANUS_LOG(LOG_VERB, "  >> Pushing event: %d (took %"SCNu64" us)\n", res, janus_get_monotonic_time()-start);
 				json_decref(event);
 				json_decref(jsep);
@@ -12147,7 +12147,7 @@ static void *janus_videoroom_handler(void *data) {
 										json_string(subscriber->room_id_str) : json_integer(subscriber->room_id));
 									json_object_set_new(event, "mid", json_string(stream->mid));
 									json_object_set_new(event, "substream", json_integer(stream->sim_context.substream));
-									gateway->push_event(msg->handle, &janus_videoroom_plugin, NULL, event, NULL);
+									gateway->push_event(msg->handle, &janus_videoroom_plugin, NULL, event, NULL, NULL, 0);
 									json_decref(event);
 								} else {
 									/* Send a PLI */
@@ -12166,7 +12166,7 @@ static void *janus_videoroom_handler(void *data) {
 										json_string(subscriber->room_id_str) : json_integer(subscriber->room_id));
 									json_object_set_new(event, "mid", json_string(stream->mid));
 									json_object_set_new(event, "temporal", json_integer(stream->sim_context.templayer));
-									gateway->push_event(msg->handle, &janus_videoroom_plugin, NULL, event, NULL);
+									gateway->push_event(msg->handle, &janus_videoroom_plugin, NULL, event, NULL, NULL, 0);
 									json_decref(event);
 								} else {
 									/* Send a PLI */
@@ -12188,7 +12188,7 @@ static void *janus_videoroom_handler(void *data) {
 										json_string(subscriber->room_id_str) : json_integer(subscriber->room_id));
 									json_object_set_new(event, "mid", json_string(stream->mid));
 									json_object_set_new(event, "spatial_layer", json_integer(stream->svc_context.spatial));
-									gateway->push_event(msg->handle, &janus_videoroom_plugin, NULL, event, NULL);
+									gateway->push_event(msg->handle, &janus_videoroom_plugin, NULL, event, NULL, NULL, 0);
 									json_decref(event);
 								} else if(spatial_layer != stream->svc_context.spatial_target) {
 									/* Send a PLI to the new RTP forward publisher */
@@ -12209,7 +12209,7 @@ static void *janus_videoroom_handler(void *data) {
 										json_string(subscriber->room_id_str) : json_integer(subscriber->room_id));
 									json_object_set_new(event, "mid", json_string(stream->mid));
 									json_object_set_new(event, "temporal_layer", json_integer(stream->svc_context.temporal_target));
-									gateway->push_event(msg->handle, &janus_videoroom_plugin, NULL, event, NULL);
+									gateway->push_event(msg->handle, &janus_videoroom_plugin, NULL, event, NULL, NULL, 0);
 									json_decref(event);
 								}
 								stream->svc_context.temporal_target = temporal_layer;
@@ -12267,7 +12267,7 @@ static void *janus_videoroom_handler(void *data) {
 						json_object_set_new(jsep, "restart", json_true());
 					/* How long will the Janus core take to push the event? */
 					gint64 start = janus_get_monotonic_time();
-					int res = gateway->push_event(msg->handle, &janus_videoroom_plugin, msg->transaction, event, jsep);
+					int res = gateway->push_event(msg->handle, &janus_videoroom_plugin, msg->transaction, event, jsep, NULL, 0);
 					JANUS_LOG(LOG_VERB, "  >> Pushing event: %d (took %"SCNu64" us)\n", res, janus_get_monotonic_time()-start);
 					json_decref(event);
 					json_decref(jsep);
@@ -12737,7 +12737,7 @@ static void *janus_videoroom_handler(void *data) {
 						janus_mutex_unlock(&subscriber->streams_mutex);
 						/* How long will the Janus core take to push the event? */
 						gint64 start = janus_get_monotonic_time();
-						int res = gateway->push_event(msg->handle, &janus_videoroom_plugin, msg->transaction, revent, jsep);
+						int res = gateway->push_event(msg->handle, &janus_videoroom_plugin, msg->transaction, revent, jsep, NULL, 0);
 						JANUS_LOG(LOG_VERB, "  >> Pushing event: %d (took %"SCNu64" us)\n", res, janus_get_monotonic_time()-start);
 						json_decref(revent);
 						json_decref(jsep);
@@ -12785,7 +12785,7 @@ static void *janus_videoroom_handler(void *data) {
 		gboolean e2ee = json_is_true(json_object_get(msg->jsep, "e2ee"));
 		if(!msg_sdp) {
 			/* No SDP to send */
-			int ret = gateway->push_event(msg->handle, &janus_videoroom_plugin, msg->transaction, event, NULL);
+			int ret = gateway->push_event(msg->handle, &janus_videoroom_plugin, msg->transaction, event, NULL, NULL, 0);
 			JANUS_LOG(LOG_VERB, "  >> %d (%s)\n", ret, janus_get_api_error(ret));
 			json_decref(event);
 		} else {
@@ -12807,7 +12807,7 @@ static void *janus_videoroom_handler(void *data) {
 			} else if(!strcasecmp(msg_sdp_type, "answer")) {
 				/* We got an answer (from a subscriber?), no need to negotiate */
 				g_atomic_int_set(&session->hangingup, 0);
-				int ret = gateway->push_event(msg->handle, &janus_videoroom_plugin, msg->transaction, event, NULL);
+				int ret = gateway->push_event(msg->handle, &janus_videoroom_plugin, msg->transaction, event, NULL, NULL, 0);
 				JANUS_LOG(LOG_VERB, "  >> %d (%s)\n", ret, janus_get_api_error(ret));
 				json_decref(event);
 				/* Take note of the fact we got our answer */
@@ -12853,7 +12853,7 @@ static void *janus_videoroom_handler(void *data) {
 					janus_mutex_unlock(&subscriber->streams_mutex);
 					/* How long will the Janus core take to push the event? */
 					gint64 start = janus_get_monotonic_time();
-					int res = gateway->push_event(session->handle, &janus_videoroom_plugin, NULL, event, jsep);
+					int res = gateway->push_event(session->handle, &janus_videoroom_plugin, NULL, event, jsep, NULL, 0);
 					JANUS_LOG(LOG_VERB, "  >> Pushing event: %d (took %"SCNu64" us)\n", res, janus_get_monotonic_time()-start);
 					json_decref(event);
 					json_decref(jsep);
@@ -13437,7 +13437,7 @@ static void *janus_videoroom_handler(void *data) {
 				/* How long will the Janus core take to push the event? */
 				g_atomic_int_set(&session->hangingup, 0);
 				gint64 start = janus_get_monotonic_time();
-				int res = gateway->push_event(msg->handle, &janus_videoroom_plugin, msg->transaction, event, jsep);
+				int res = gateway->push_event(msg->handle, &janus_videoroom_plugin, msg->transaction, event, jsep, NULL, 0);
 				JANUS_LOG(LOG_VERB, "  >> Pushing event: %d (took %"SCNu64" us)\n", res, janus_get_monotonic_time()-start);
 				/* If this is an update/renegotiation, notify participants about this */
 				if(sdp_update && g_atomic_int_get(&session->started)) {
@@ -13474,7 +13474,7 @@ error:
 			json_object_set_new(event, "videoroom", json_string("event"));
 			json_object_set_new(event, "error_code", json_integer(error_code));
 			json_object_set_new(event, "error", json_string(error_cause));
-			int ret = gateway->push_event(msg->handle, &janus_videoroom_plugin, msg->transaction, event, NULL);
+			int ret = gateway->push_event(msg->handle, &janus_videoroom_plugin, msg->transaction, event, NULL, NULL, 0);
 			JANUS_LOG(LOG_VERB, "  >> Pushing event: %d (%s)\n", ret, janus_get_api_error(ret));
 			json_decref(event);
 			janus_videoroom_message_free(msg);
@@ -13536,7 +13536,7 @@ static void janus_videoroom_relay_rtp_packet(gpointer data, gpointer user_data) 
 				json_object_set_new(event, "room", string_ids ? json_string(subscriber->room_id_str) : json_integer(subscriber->room_id));
 				json_object_set_new(event, "mid", json_string(stream->mid));
 				json_object_set_new(event, "spatial_layer", json_integer(stream->svc_context.spatial));
-				gateway->push_event(subscriber->session->handle, &janus_videoroom_plugin, NULL, event, NULL);
+				gateway->push_event(subscriber->session->handle, &janus_videoroom_plugin, NULL, event, NULL, NULL, 0);
 				json_decref(event);
 			}
 			if(stream->svc_context.changed_temporal) {
@@ -13546,7 +13546,7 @@ static void janus_videoroom_relay_rtp_packet(gpointer data, gpointer user_data) 
 				json_object_set_new(event, "room", string_ids ? json_string(subscriber->room_id_str) : json_integer(subscriber->room_id));
 				json_object_set_new(event, "mid", json_string(stream->mid));
 				json_object_set_new(event, "temporal_layer", json_integer(stream->svc_context.temporal));
-				gateway->push_event(subscriber->session->handle, &janus_videoroom_plugin, NULL, event, NULL);
+				gateway->push_event(subscriber->session->handle, &janus_videoroom_plugin, NULL, event, NULL, NULL, 0);
 				json_decref(event);
 			}
 			/* If we got here, update the RTP header and send the packet */
@@ -13596,7 +13596,7 @@ static void janus_videoroom_relay_rtp_packet(gpointer data, gpointer user_data) 
 				json_object_set_new(event, "room", string_ids ? json_string(subscriber->room_id_str) : json_integer(subscriber->room_id));
 				json_object_set_new(event, "mid", json_string(stream->mid));
 				json_object_set_new(event, "substream", json_integer(stream->sim_context.substream));
-				gateway->push_event(subscriber->session->handle, &janus_videoroom_plugin, NULL, event, NULL);
+				gateway->push_event(subscriber->session->handle, &janus_videoroom_plugin, NULL, event, NULL, NULL, 0);
 				json_decref(event);
 			}
 			if(stream->sim_context.changed_temporal) {
@@ -13606,7 +13606,7 @@ static void janus_videoroom_relay_rtp_packet(gpointer data, gpointer user_data) 
 				json_object_set_new(event, "room", string_ids ? json_string(subscriber->room_id_str) : json_integer(subscriber->room_id));
 				json_object_set_new(event, "mid", json_string(stream->mid));
 				json_object_set_new(event, "temporal", json_integer(stream->sim_context.templayer));
-				gateway->push_event(subscriber->session->handle, &janus_videoroom_plugin, NULL, event, NULL);
+				gateway->push_event(subscriber->session->handle, &janus_videoroom_plugin, NULL, event, NULL, NULL, 0);
 				json_decref(event);
 			}
 			/* If we got here, update the RTP header and send the packet */
@@ -14320,7 +14320,7 @@ cleanup:
 				janus_mutex_unlock(&subscriber->streams_mutex);
 				/* How long will the Janus core take to push the event? */
 				gint64 start = janus_get_monotonic_time();
-				int res = gateway->push_event(subscriber->session->handle, &janus_videoroom_plugin, NULL, event, jsep);
+				int res = gateway->push_event(subscriber->session->handle, &janus_videoroom_plugin, NULL, event, jsep, NULL, 0);
 				JANUS_LOG(LOG_VERB, "  >> Pushing event: %d (took %"SCNu64" us)\n", res, janus_get_monotonic_time()-start);
 				json_decref(event);
 				json_decref(jsep);
