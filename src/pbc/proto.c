@@ -5,23 +5,33 @@
 #include "alloc.h"
 #include "stringpool.h"
 #include "bootstrap.h"
+#include "pbdata.h"
 
 #include <stdlib.h>
 #include <string.h>
 
-const char * 
+const char *
 pbc_error(struct pbc_env * p) {
 	const char *err = p->lasterror;
 	p->lasterror = "";
 	return err;
 }
 
-struct _message * 
+struct _message *
 _pbcP_get_message(struct pbc_env * p , const char *name) {
 	return (struct _message *)_pbcM_sp_query(p->msgs, name);
 }
 
-struct pbc_env * 
+struct pbc_env* init_env(void) {
+    struct pbc_slice slice;
+    slice.len = sizeof(pbdata);
+    slice.buffer = (void*)pbdata;
+    struct pbc_env* env = pbc_new();
+    pbc_register(env, &slice);
+    return env;
+}
+
+struct pbc_env *
 pbc_new(void) {
 	struct pbc_env * p = (struct pbc_env *)malloc(sizeof(*p));
 	p->files = _pbcM_sp_new(0 , NULL);
@@ -59,7 +69,7 @@ free_msg(void *p) {
 	free(p);
 }
 
-void 
+void
 pbc_delete(struct pbc_env *p) {
 	_pbcM_sp_foreach(p->enums, free_enum);
 	_pbcM_sp_delete(p->enums);
@@ -89,7 +99,7 @@ _pbcP_push_enum(struct pbc_env * p, const char *name, struct map_kv *table, int 
 	return v;
 }
 
-void 
+void
 _pbcP_push_message(struct pbc_env * p, const char *name, struct _field *f , pbc_array queue) {
 	struct _message * m = (struct _message *)_pbcM_sp_query(p->msgs, name);
 	if (m==NULL) {
@@ -103,7 +113,7 @@ _pbcP_push_message(struct pbc_env * p, const char *name, struct _field *f , pbc_
 	}
 	struct _field * field = (struct _field *)malloc(sizeof(*field));
 	memcpy(field,f,sizeof(*f));
-	_pbcM_sp_insert(m->name, field->name, field); 
+	_pbcM_sp_insert(m->name, field->name, field);
 	pbc_var atom;
 	atom->m.buffer = field;
 	if (f->type == PTYPE_MESSAGE || f->type == PTYPE_ENUM) {
@@ -131,7 +141,7 @@ _set_table(void *p, void *ud) {
 	++iter->count;
 }
 
-struct _message * 
+struct _message *
 _pbcP_init_message(struct pbc_env * p, const char *name) {
 	struct _message * m = (struct _message *)_pbcM_sp_query(p->msgs, name);
 	if (m == NULL) {
@@ -162,7 +172,7 @@ _pbcP_init_message(struct pbc_env * p, const char *name) {
 	return m;
 }
 
-int 
+int
 _pbcP_message_default(struct _message * m, const char * name, pbc_var defv) {
 	struct _field * f= (struct _field *)_pbcM_sp_query(m->name, name);
 	if (f==NULL) {
@@ -175,7 +185,7 @@ _pbcP_message_default(struct _message * m, const char * name, pbc_var defv) {
 	return f->type;
 }
 
-int 
+int
 _pbcP_type(struct _field * field, const char ** type) {
 	if (field == NULL) {
 		return 0;
@@ -187,11 +197,11 @@ _pbcP_type(struct _field * field, const char ** type) {
 		ret = PBC_REAL;
 		break;
 	case PTYPE_INT64:
-	case PTYPE_SINT64:  
+	case PTYPE_SINT64:
 		ret = PBC_INT64;
 		break;
 	case PTYPE_INT32:
-	case PTYPE_SINT32:  
+	case PTYPE_SINT32:
 		ret = PBC_INT;
 		break;
 	case PTYPE_UINT32:
@@ -212,7 +222,7 @@ _pbcP_type(struct _field * field, const char ** type) {
 	case PTYPE_STRING:
 		ret = PBC_STRING;
 		break;
-	case PTYPE_BYTES:  
+	case PTYPE_BYTES:
 		ret = PBC_BYTES;
 		break;
 	case PTYPE_ENUM:
@@ -238,7 +248,7 @@ _pbcP_type(struct _field * field, const char ** type) {
 	return ret;
 }
 
-int 
+int
 pbc_type(struct pbc_env * p, const char * type_name , const char * key , const char ** type) {
 	struct _message *m = _pbcP_get_message(p, type_name);
 	if (m==NULL) {

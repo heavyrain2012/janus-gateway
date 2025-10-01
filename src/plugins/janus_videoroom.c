@@ -1933,7 +1933,7 @@ static struct janus_json_parameter create_parameters[] = {
 	{"lock_record", JANUS_JSON_BOOL, 0},
 	{"permanent", JANUS_JSON_BOOL, 0},
 	{"notify_joining", JANUS_JSON_BOOL, 0},
-	{"combine_notify", JANUS_JSON_BOOL, 0},
+	{"pb_message", JANUS_JSON_BOOL, 0},
 	{"require_e2ee", JANUS_JSON_BOOL, 0},
 	{"dummy_publisher", JANUS_JSON_BOOL, 0},
 	{"dummy_streams", JANUS_JSON_ARRAY, 0},
@@ -2358,7 +2358,7 @@ typedef struct janus_videoroom {
 	gboolean check_allowed;		/* Whether to check tokens when participants join (see below) */
 	GHashTable *allowed;		/* Map of participants (as tokens) allowed to join */
 	gboolean notify_joining;	/* Whether an event is sent to notify all participants if a new participant joins the room */
-	gboolean combine_notify; /* Whether combine notify to all member in a room */
+	gboolean pb_message; /* Whether combine notify to all member in a room */
 	int helper_threads;			/* Number of helper threads for relaying purposes */
 	GList *threads;				/* List of helper threads, if any */
 	janus_mutex mutex;			/* Mutex to lock this room instance */
@@ -3790,7 +3790,7 @@ int janus_videoroom_init(janus_callbacks *callback, const char *config_path) {
 			janus_config_item *playoutdelay_ext = janus_config_get(config, cat, janus_config_type_item, "playoutdelay_ext");
 			janus_config_item *transport_wide_cc_ext = janus_config_get(config, cat, janus_config_type_item, "transport_wide_cc_ext");
 			janus_config_item *notify_joining = janus_config_get(config, cat, janus_config_type_item, "notify_joining");
-			janus_config_item *combine_notify = janus_config_get(config, cat, janus_config_type_item, "combine_notify");
+			janus_config_item *pb_message = janus_config_get(config, cat, janus_config_type_item, "pb_message");
 			janus_config_item *req_e2ee = janus_config_get(config, cat, janus_config_type_item, "require_e2ee");
 			janus_config_item *dummy_pub = janus_config_get(config, cat, janus_config_type_item, "dummy_publisher");
 			janus_config_item *dummy_str = janus_config_get(config, cat, janus_config_type_array, "dummy_streams");
@@ -4005,9 +4005,9 @@ int janus_videoroom_init(janus_callbacks *callback, const char *config_path) {
 			if(notify_joining != NULL && notify_joining->value != NULL)
 				videoroom->notify_joining = janus_is_true(notify_joining->value);
 
-			videoroom->combine_notify = FALSE;
-			if(combine_notify != NULL && combine_notify->value != NULL)
-				videoroom->combine_notify = janus_is_true(combine_notify->value);
+			videoroom->pb_message = FALSE;
+			if(pb_message != NULL && pb_message->value != NULL)
+				videoroom->pb_message = janus_is_true(pb_message->value);
 
 			g_atomic_int_set(&videoroom->destroyed, 0);
 			janus_mutex_init(&videoroom->mutex);
@@ -4298,50 +4298,6 @@ static janus_videoroom_subscriber *janus_videoroom_session_get_subscriber_nodebu
 	return subscriber;
 }
 
-// Base64编码表
-static const char base64_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-                                  "abcdefghijklmnopqrstuvwxyz"
-                                  "0123456789+/";
-
-// 计算Base64编码后的长度
-static size_t base64_encoded_length(size_t input_len) {
-    return (input_len + 2) / 3 * 4;
-}
-
-// Base64编码实现
-static void base64_encode(const unsigned char *input, size_t input_len, char *output)
-{
-    size_t i = 0, j = 0;
-    unsigned char three_bytes[3];
-    unsigned char four_chars[4];
-
-    while (input_len) {
-        size_t n = input_len > 3 ? 3 : input_len;   /* 本次实际有效字节数 */
-
-        three_bytes[0] = input[i++];
-        three_bytes[1] = n > 1 ? input[i++] : 0;
-        three_bytes[2] = n > 2 ? input[i++] : 0;
-
-        four_chars[0] = (three_bytes[0] & 0xfc) >> 2;
-        four_chars[1] = ((three_bytes[0] & 0x03) << 4) | ((three_bytes[1] & 0xf0) >> 4);
-        four_chars[2] = ((three_bytes[1] & 0x0f) << 2) | ((three_bytes[2] & 0xc0) >> 6);
-        four_chars[3] =  three_bytes[2] & 0x3f;
-
-        output[j++] = base64_chars[four_chars[0]];
-        output[j++] = base64_chars[four_chars[1]];
-        output[j++] = n > 1 ? base64_chars[four_chars[2]] : '=';
-        output[j++] = n > 2 ? base64_chars[four_chars[3]] : '=';
-
-        input_len -= n;
-    }
-    output[j] = '\0';
-}
-
-// 释放GList中存储的int64_t数据
-static void free_int64(gpointer data) {
-    g_free(data);
-}
-
 extern int janus_plugin_get_handle_and_session_id(janus_plugin_session *plugin_session, guint64 *handleId, guint64 *sessionId);
 static void janus_videoroom_notify_participants(janus_videoroom_publisher *participant, json_t *msg, gboolean notify_source_participant) {
 	/* participant->room->mutex has to be locked. */
@@ -4351,12 +4307,7 @@ static void janus_videoroom_notify_participants(janus_videoroom_publisher *parti
 	gpointer value;
 	g_hash_table_iter_init(&iter, participant->room->participants);
 
-	if(participant->room && !g_atomic_int_get(&participant->room->destroyed) && participant->room->combine_notify) {
-		/* Reference the payload, as the plugin may still need it and will do a decref itself */
-		json_incref(msg);
-		json_t *events = json_object();
-		json_object_set_new(events, "msg", msg);
-		//json_object_set_new(events, "room", string_ids ? json_string(participant->room_id_str) : json_integer(participant->room_id));
+	if(participant->room && !g_atomic_int_get(&participant->room->destroyed) && participant->room->pb_message) {
     // 创建GList链表
     GList *list = NULL;
 		janus_plugin_session *available_plugin_session = NULL;
@@ -4383,60 +4334,27 @@ static void janus_videoroom_notify_participants(janus_videoroom_publisher *parti
 			}
 		}
 
-    // 计算总字节数（每个int64_t占8字节）
-    size_t total_bytes = g_list_length(list) * sizeof(int64_t);
-
-    // 分配内存存储所有int64_t数据的字节流
-    unsigned char *byte_data = g_malloc(total_bytes);
-    unsigned char *ptr = byte_data;
-
-    // 将GList中的数据复制到字节数组
-    GList *iter = list;
-    while (iter) {
-        guint64 host_value = *(guint64 *)iter->data;
-        for(int i = 0; i < 8; i++) {
-          guint64 leftSift = host_value >> 8;
-          *(ptr+i) = host_value - (leftSift<<8);
-          host_value = leftSift;
-        }
-        ptr += sizeof(guint64);
-        iter = iter->next;
-    }
-
-    // 计算Base64编码所需的长度并分配内存
-    size_t base64_len = base64_encoded_length(total_bytes) + 1; // +1 用于null终止符
-    char *base64_str = g_malloc(base64_len);
-
-    // 执行Base64编码
-    base64_encode(byte_data, total_bytes, base64_str);
-
-    json_object_set_new(events, "ps", json_string(base64_str));
-
-    // 释放资源
-    g_free(byte_data);
-    g_list_free_full(list, free_int64); // 释放链表及其中的数据
-
+    json_object_set_new(msg, "combine_session", list);
 
 		if(available_plugin_session) {
 		    JANUS_LOG(LOG_INFO, "Send notifications\n");
-			int ret = gateway->push_event(available_plugin_session, &janus_videoroom_plugin, NULL, events, NULL, NULL, 0);
+			int ret = gateway->push_event(available_plugin_session, &janus_videoroom_plugin, NULL, msg, NULL, NULL, 0);
 		    JANUS_LOG(LOG_VERB, "  >> %d (%s)\n", ret, janus_get_api_error(ret));
 
 		    if(ret != JANUS_OK && ret != -1) {
 		        if(available_plugin_session2) {
 		            JANUS_LOG(LOG_INFO, "Send notifications failure, retry!\n");
-		            int ret = gateway->push_event(available_plugin_session2, &janus_videoroom_plugin, NULL, events, NULL, NULL, 0);
+		            int ret = gateway->push_event(available_plugin_session2, &janus_videoroom_plugin, NULL, msg, NULL, NULL, 0);
 		            if(ret != JANUS_OK && ret != -1) {
 		                if(available_plugin_session3) {
 		                    JANUS_LOG(LOG_INFO, "Send notifications failure, retry again!\n");
-                            gateway->push_event(available_plugin_session3, &janus_videoroom_plugin, NULL, events, NULL, NULL, 0);
+                            gateway->push_event(available_plugin_session3, &janus_videoroom_plugin, NULL, msg, NULL, NULL, 0);
 						}
 					}
 				}
 			}
 		}
-    g_free(base64_str);
-		json_decref(events);
+
 		return;
 	}
 
@@ -5010,7 +4928,7 @@ static json_t *janus_videoroom_process_synchronous_request(janus_videoroom_sessi
 		json_t *playoutdelay_ext = json_object_get(root, "playoutdelay_ext");
 		json_t *transport_wide_cc_ext = json_object_get(root, "transport_wide_cc_ext");
 		json_t *notify_joining = json_object_get(root, "notify_joining");
-		json_t *combine_notify = json_object_get(root, "combine_notify");
+		json_t *pb_message = json_object_get(root, "pb_message");
 		json_t *record = json_object_get(root, "record");
 		json_t *rec_dir = json_object_get(root, "rec_dir");
 		json_t *lock_record = json_object_get(root, "lock_record");
@@ -5274,7 +5192,7 @@ static json_t *janus_videoroom_process_synchronous_request(janus_videoroom_sessi
 		/* By default, the VideoRoom plugin does not notify about participants simply joining the room.
 		   It only notifies when the participant actually starts publishing media. */
 		videoroom->notify_joining = notify_joining ? json_is_true(notify_joining) : FALSE;
-		videoroom->combine_notify = combine_notify ? json_is_true(combine_notify) : FALSE;
+		videoroom->pb_message = pb_message ? json_is_true(pb_message) : FALSE;
 		if(record) {
 			videoroom->record = json_is_true(record);
 		}
@@ -5424,8 +5342,8 @@ static json_t *janus_videoroom_process_synchronous_request(janus_videoroom_sessi
 			janus_config_add(config, c, janus_config_item_create("transport_wide_cc_ext", videoroom->transport_wide_cc_ext ? "true" : "false"));
 			if(videoroom->notify_joining)
 				janus_config_add(config, c, janus_config_item_create("notify_joining", "true"));
-			if(videoroom->combine_notify)
-				janus_config_add(config, c, janus_config_item_create("combine_notify", "true"));
+			if(videoroom->pb_message)
+				janus_config_add(config, c, janus_config_item_create("pb_message", "true"));
 			if(videoroom->record)
 				janus_config_add(config, c, janus_config_item_create("record", "true"));
 			if(videoroom->rec_dir)
@@ -5623,8 +5541,8 @@ static json_t *janus_videoroom_process_synchronous_request(janus_videoroom_sessi
 			janus_config_add(config, c, janus_config_item_create("transport_wide_cc_ext", videoroom->transport_wide_cc_ext ? "true" : "false"));
 			if(videoroom->notify_joining)
 				janus_config_add(config, c, janus_config_item_create("notify_joining", "true"));
-			if(videoroom->combine_notify)
-				janus_config_add(config, c, janus_config_item_create("combine_notify", "true"));
+			if(videoroom->pb_message)
+				janus_config_add(config, c, janus_config_item_create("pb_message", "true"));
 			if(videoroom->record)
 				janus_config_add(config, c, janus_config_item_create("record", "true"));
 			if(videoroom->rec_dir)
@@ -5801,7 +5719,7 @@ static json_t *janus_videoroom_process_synchronous_request(janus_videoroom_sessi
 				json_object_set_new(rl, "require_e2ee", room->require_e2ee ? json_true() : json_false());
 				json_object_set_new(rl, "dummy_publisher", room->dummy_publisher ? json_true() : json_false());
 				json_object_set_new(rl, "notify_joining", room->notify_joining ? json_true() : json_false());
-				json_object_set_new(rl, "combine_notify", room->combine_notify ? json_true() : json_false());
+				json_object_set_new(rl, "pb_message", room->pb_message ? json_true() : json_false());
 				char audio_codecs[100];
 				char video_codecs[100];
 				janus_videoroom_codecstr(room, audio_codecs, video_codecs, sizeof(audio_codecs), ",");

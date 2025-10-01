@@ -43,6 +43,7 @@
 #include "auth.h"
 #include "record.h"
 #include "events.h"
+#include "pbc/pbc.h"
 
 
 #define JANUS_NAME				"Janus WebRTC Server"
@@ -3684,6 +3685,40 @@ int janus_plugin_get_handle_and_session_id(janus_plugin_session *plugin_session,
 	janus_refcount_decrease(&ice_handle->ref);
 	return 0;
 }
+//
+// static int setInt(struct pbc_wmessage *msg, const char *key, int value) {
+// 		unsigned int low = abs(value);
+// 		unsigned int hi = 0;
+// 		if (value < 0) {
+// 				hi = -1;
+// 		}
+// 		return pbc_wmessage_integer(msg, key, low, hi);
+// }
+
+static int setInt64(struct pbc_wmessage *msg, const char *key, int64_t value) {
+		unsigned int hi = value >> 32;
+		int64_t hi64 = hi;
+		unsigned int low = (unsigned int)(value - (hi64 << 32));
+
+		return pbc_wmessage_integer(msg, key, low, hi);
+}
+
+static int setString(struct pbc_wmessage *msg, const char *key, const char *value) {
+		return pbc_wmessage_string(msg, key, value, (int)strlen(value));
+}
+
+static struct pbc_wmessage* setSubMessaage(struct pbc_wmessage *msg, const char *key) {
+		return pbc_wmessage_message(msg, key);
+}
+
+// const std::string finishWrite(struct pbc_wmessage *msg) {
+// 		struct pbc_slice slice;
+// 		pbc_wmessage_buffer(msg, &slice);
+//
+// 		std::string result = std::string((const char *)slice.buffer, slice.len);
+// 		pbc_wmessage_delete(msg);
+// 		return result;
+// }
 
 /* Plugin callback interface */
 int janus_plugin_push_event(janus_plugin_session *plugin_session, janus_plugin *plugin, const char *transaction, json_t *message, json_t *jsep, const unsigned char *pbData, size_t pbLength) {
@@ -3745,16 +3780,28 @@ int janus_plugin_push_event(janus_plugin_session *plugin_session, janus_plugin *
 	json_object_set_new(plugin_data, "plugin", json_string(plugin->get_package()));
 	json_object_set_new(plugin_data, "data", message);
 	json_object_set_new(event, "plugindata", plugin_data);
+
+	struct pbc_env* m_env = init_env();
+	struct pbc_wmessage* JanusPluginData = pbc_wmessage_new(m_env, "JanusPluginData");
+	struct pbc_wmessage* PluginData = setSubMessaage(JanusPluginData, "PluginData");
+
+
 	if(merged_jsep != NULL) {
 		if(e2ee)
 			janus_flags_set(&ice_handle->webrtc_flags, JANUS_ICE_HANDLE_WEBRTC_E2EE);
 		if(janus_flags_is_set(&ice_handle->webrtc_flags, JANUS_ICE_HANDLE_WEBRTC_E2EE))
 			json_object_set_new(merged_jsep, "e2ee", json_true());
 		json_object_set_new(event, "jsep", merged_jsep);
+
+		const char *merged_sdp_type = json_string_value(json_object_get(merged_jsep, "type"));
+		const char *merged_sdp = json_string_value(json_object_get(merged_jsep, "sdp"));
+
+		struct pbc_wmessage* pbJsep = setSubMessaage(PluginData, "Jsep");
+		setString(pbJsep, "type", merged_sdp_type);
+		setString(pbJsep, "sdp", merged_sdp);
+
 		/* In case event handlers are enabled, push the local SDP to all handlers */
 		if(janus_events_is_enabled()) {
-			const char *merged_sdp_type = json_string_value(json_object_get(merged_jsep, "type"));
-			const char *merged_sdp = json_string_value(json_object_get(merged_jsep, "sdp"));
 			/* Notify event handlers as well */
 			janus_events_notify_handlers(JANUS_EVENT_TYPE_JSEP, JANUS_EVENT_SUBTYPE_NONE,
 				session->session_id, ice_handle->handle_id, ice_handle->opaque_id, "local", merged_sdp_type, merged_sdp);
@@ -3762,6 +3809,32 @@ int janus_plugin_push_event(janus_plugin_session *plugin_session, janus_plugin *
 	}
 	/* Send the event */
 	JANUS_LOG(LOG_VERB, "[%"SCNu64"] Sending event to transport...\n", ice_handle->handle_id);
+
+
+		setString(JanusPluginData, "janus", "event");
+		setInt64(JanusPluginData, "session_id", session->session_id);
+		setInt64(JanusPluginData, "sender", session->session_id);
+		if(transaction) {
+			setString(JanusPluginData, "transaction", transaction);
+		}
+
+		setString(PluginData, "plugin", plugin->get_package());
+
+		//data from message
+		struct pbc_wmessage* pData = setSubMessaage(PluginData, "Data");
+		const char *videoroom = json_string_value(json_object_get(message, "videoroom"));
+		setString(pData, "videoroom", videoroom);
+		const char *room = json_string_value(json_object_get(message, "room"));
+		setString(pData, "room", room);
+
+		struct pbc_slice slice;
+		pbc_wmessage_buffer(JanusPluginData, &slice);
+
+		//std::string result = std::string((const char *)slice.buffer, slice.len);
+		janus_session_notify_event(session, NULL, slice.buffer, slice.len);
+		pbc_wmessage_delete(JanusPluginData);
+
+
 	janus_session_notify_event(session, event, NULL, 0);
 
 	if((restart || janus_flags_is_set(&ice_handle->webrtc_flags, JANUS_ICE_HANDLE_WEBRTC_RESEND_TRICKLES))

@@ -41,6 +41,7 @@ struct pbc_env;
 struct pbc_rmessage;
 struct pbc_wmessage;
 
+struct pbc_env* init_env(void);
 struct pbc_env * pbc_new(void);
 void pbc_delete(struct pbc_env *);
 int pbc_register(struct pbc_env *, struct pbc_slice * slice);
@@ -86,7 +87,7 @@ int pbc_wmessage_string(struct pbc_wmessage *, const char *key, const char * v, 
 struct pbc_wmessage * pbc_wmessage_message(struct pbc_wmessage *, const char *key);
 void * pbc_wmessage_buffer(struct pbc_wmessage *, struct pbc_slice * slice);
 
-// array api 
+// array api
 
 int pbc_array_size(pbc_array);
 uint32_t pbc_array_integer(pbc_array array, int index, uint32_t *hi);

@@ -122,6 +122,31 @@ janus_SOURCES = \
 	transports/transport.c \
 	events/eventhandler.h \
 	loggers/logger.h \
+	pbc/alloc.c \
+  pbc/context.c \
+	pbc/pattern.c \
+  pbc/rmessage.c \
+	pbc/wmessage.c \
+  pbc/array.c \
+	pbc/decode.c \
+  pbc/proto.c \
+  pbc/stringpool.c \
+  pbc/bootstrap.c \
+  pbc/map.c \
+  pbc/register.c \
+  pbc/varint.c \
+  pbc/alloc.h \
+  pbc/map.h \
+  pbc/proto.h \
+  pbc/array.h \
+  pbc/pattern.h \
+  pbc/stringpool.h \
+  pbc/bootstrap.h \
+  pbc/varint.h \
+  pbc/context.h \
+  pbc/pbc.h \
+  pbc/descriptor.pbc.h \
+  pbc/pbdata.h
 	$(NULL)
 
 janus_CFLAGS = \
@@ -486,7 +511,7 @@ endif
 
 if ENABLE_PLUGIN_VIDEOROOM
 plugin_LTLIBRARIES += plugins/libjanus_videoroom.la
-plugins_libjanus_videoroom_la_SOURCES = plugins/janus_videoroom.c plugins/pbc/alloc.c plugins/pbc/context.c plugins/pbc/pattern.c plugins/pbc/rmessage.c plugins/pbc/wmessage.c plugins/pbc/array.c plugins/pbc/decode.c plugins/pbc/proto.c plugins/pbc/stringpool.c plugins/pbc/bootstrap.c plugins/pbc/map.c plugins/pbc/register.c plugins/pbc/varint.c plugins/pbc/alloc.h plugins/pbc/map.h plugins/pbc/proto.h plugins/pbc/array.h plugins/pbc/pattern.h plugins/pbc/stringpool.h plugins/pbc/bootstrap.h plugins/pbc/pbbase.h plugins/pbc/varint.h plugins/pbc/context.h plugins/pbc/pbc.h plugins/pbc/descriptor.pbc.h plugins/pbc/pbdata.h
+plugins_libjanus_videoroom_la_SOURCES = plugins/janus_videoroom.c
 plugins_libjanus_videoroom_la_CFLAGS = $(plugins_cflags) $(LIBSRTP_CFLAGS)
 plugins_libjanus_videoroom_la_LDFLAGS = $(plugins_ldflags)
 plugins_libjanus_videoroom_la_LIBADD = $(plugins_libadd)
