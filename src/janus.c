@@ -31,6 +31,14 @@
 #include <curl/curl.h>
 #endif
 
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <signal.h>
+#include <execinfo.h>
+#include <unistd.h>
+
+
 #include "janus.h"
 #include "version.h"
 #include "options.h"
@@ -825,7 +833,12 @@ void janus_session_notify_event(janus_session *session, json_t *event, const uns
 		if(source != NULL && source->transport != NULL) {
 			/* Send this to the transport client */
 			JANUS_LOG(LOG_HUGE, "Sending event to %s (%p)\n", source->transport->get_package(), source->instance);
-			source->transport->send_message(source->instance, NULL, FALSE, event, NULL, 0);
+			if(event) {
+				source->transport->send_message(source->instance, NULL, FALSE, event, NULL, 0);
+			} else {
+				source->transport->send_message(source->instance, NULL, FALSE, NULL, pbData, pbLength);
+			}
+
 		} else {
 			/* No transport, free the event */
 			json_decref(event);
@@ -3685,15 +3698,15 @@ int janus_plugin_get_handle_and_session_id(janus_plugin_session *plugin_session,
 	janus_refcount_decrease(&ice_handle->ref);
 	return 0;
 }
-//
-// static int setInt(struct pbc_wmessage *msg, const char *key, int value) {
-// 		unsigned int low = abs(value);
-// 		unsigned int hi = 0;
-// 		if (value < 0) {
-// 				hi = -1;
-// 		}
-// 		return pbc_wmessage_integer(msg, key, low, hi);
-// }
+
+static int setInt(struct pbc_wmessage *msg, const char *key, int value) {
+		unsigned int low = abs(value);
+		unsigned int hi = 0;
+		if (value < 0) {
+				hi = -1;
+		}
+		return pbc_wmessage_integer(msg, key, low, hi);
+}
 
 static int setInt64(struct pbc_wmessage *msg, const char *key, int64_t value) {
 		unsigned int hi = value >> 32;
@@ -3719,6 +3732,79 @@ static struct pbc_wmessage* setSubMessaage(struct pbc_wmessage *msg, const char 
 // 		pbc_wmessage_delete(msg);
 // 		return result;
 // }
+
+const char* stringOfJson(json_t *message, const char* key) {
+	json_t *value = json_object_get(message, key);
+	if(value && json_is_string(value)) {
+		return json_string_value(value);
+	}
+	return NULL;
+}
+
+gint64 integerOfJson(json_t *message, const char* key) {
+	json_t *value = json_object_get(message, key);
+	if(value && json_is_integer(value)) {
+		return json_integer_value(value);
+	}
+	return -1;
+}
+//{"type":"audio","active":true,"mindex":0,"mid":"0","ready":false,"send":true,"feed_id":"61724286209c4490b7cd158400e25fa1","feed_mid":"0","codec":"opus"}
+void fillupStream(json_t *stream, struct pbc_wmessage* pStream) {
+	setString(pStream, "type", stringOfJson(stream, "type"));
+	json_t *active = json_object_get(stream, "active");
+	if(active) {
+		setInt(pStream, "active", json_boolean_value(active)?1:0);
+	}
+	setInt(pStream, "mindex", integerOfJson(stream, "mindex"));
+	setString(pStream, "mid", stringOfJson(stream, "mid"));
+
+	json_t *ready = json_object_get(stream, "ready");
+	if(ready) {
+		setInt(pStream, "ready", json_boolean_value(ready)?1:0);
+	}
+
+	json_t *send = json_object_get(stream, "send");
+	if(send) {
+		setInt(pStream, "send", json_boolean_value(send)?1:0);
+	}
+
+	char* feed_id = stringOfJson(stream, "feed_id");
+	if(feed_id) {
+		setString(pStream, "feed_id", feed_id);
+	}
+
+	char* feed_mid = stringOfJson(stream, "feed_mid");
+	if(feed_mid) {
+		setString(pStream, "feed_mid", feed_mid);
+	}
+
+	setString(pStream, "codec", stringOfJson(stream, "codec"));
+
+	char* h264_profile = stringOfJson(stream, "h264_profile");
+	if(h264_profile) {
+		setString(pStream, "h264_profile", h264_profile);
+	}
+
+	gint64 fec = integerOfJson(stream, "fec");;
+	if(fec >= 0) {
+		setInt(pStream, "fec", fec);
+	}
+
+	gint64 talking = integerOfJson(stream, "talking");
+	if(talking >= 0) {
+		setInt(pStream, "talking", talking);
+	}
+
+	gint64 audiolevel_ext_id = integerOfJson(stream, "audiolevel_ext_id");
+	if(audiolevel_ext_id >= 0) {
+		setInt(pStream, "audiolevel_ext_id", audiolevel_ext_id);
+	}
+
+	gint64 videoorient_ext_id = integerOfJson(stream, "videoorient_ext_id");
+	if(videoorient_ext_id >= 0) {
+		setInt(pStream, "videoorient_ext_id", videoorient_ext_id);
+	}
+}
 
 /* Plugin callback interface */
 int janus_plugin_push_event(janus_plugin_session *plugin_session, janus_plugin *plugin, const char *transaction, json_t *message, json_t *jsep, const unsigned char *pbData, size_t pbLength) {
@@ -3781,10 +3867,14 @@ int janus_plugin_push_event(janus_plugin_session *plugin_session, janus_plugin *
 	json_object_set_new(plugin_data, "data", message);
 	json_object_set_new(event, "plugindata", plugin_data);
 
-	struct pbc_env* m_env = init_env();
-	struct pbc_wmessage* JanusPluginData = pbc_wmessage_new(m_env, "JanusPluginData");
-	struct pbc_wmessage* PluginData = setSubMessaage(JanusPluginData, "PluginData");
 
+	JANUS_LOG(LOG_ERR, "1\n");
+	struct pbc_env* m_env = init_env();
+	JANUS_LOG(LOG_ERR, "2\n");
+	struct pbc_wmessage* JanusPluginData = pbc_wmessage_new(m_env, "JanusPluginData");
+	JANUS_LOG(LOG_ERR, "3\n");
+	struct pbc_wmessage* PluginData = setSubMessaage(JanusPluginData, "plugin_data");
+	JANUS_LOG(LOG_ERR, "4\n");
 
 	if(merged_jsep != NULL) {
 		if(e2ee)
@@ -3796,9 +3886,11 @@ int janus_plugin_push_event(janus_plugin_session *plugin_session, janus_plugin *
 		const char *merged_sdp_type = json_string_value(json_object_get(merged_jsep, "type"));
 		const char *merged_sdp = json_string_value(json_object_get(merged_jsep, "sdp"));
 
-		struct pbc_wmessage* pbJsep = setSubMessaage(PluginData, "Jsep");
+		struct pbc_wmessage* pbJsep = setSubMessaage(PluginData, "jsep");
+		JANUS_LOG(LOG_ERR, "5\n");
 		setString(pbJsep, "type", merged_sdp_type);
 		setString(pbJsep, "sdp", merged_sdp);
+		JANUS_LOG(LOG_ERR, "6\n");
 
 		/* In case event handlers are enabled, push the local SDP to all handlers */
 		if(janus_events_is_enabled()) {
@@ -3811,29 +3903,228 @@ int janus_plugin_push_event(janus_plugin_session *plugin_session, janus_plugin *
 	JANUS_LOG(LOG_VERB, "[%"SCNu64"] Sending event to transport...\n", ice_handle->handle_id);
 
 
+	/* 如果想把整个子对象打印成字符串，可用 json_dumps */
+	char *txt = json_dumps(message, JSON_INDENT(4));
+	printf("  raw: %s\n", txt);
+	free(txt);
+
+		JANUS_LOG(LOG_ERR, "7\n");
 		setString(JanusPluginData, "janus", "event");
+				JANUS_LOG(LOG_ERR, "8\n");
 		setInt64(JanusPluginData, "session_id", session->session_id);
-		setInt64(JanusPluginData, "sender", session->session_id);
+				JANUS_LOG(LOG_ERR, "9\n");
+		setInt64(JanusPluginData, "sender", ice_handle->handle_id);
+				JANUS_LOG(LOG_ERR, "10\n");
 		if(transaction) {
+					JANUS_LOG(LOG_ERR, "11\n");
 			setString(JanusPluginData, "transaction", transaction);
 		}
-
+		JANUS_LOG(LOG_ERR, "12\n");
 		setString(PluginData, "plugin", plugin->get_package());
-
-		//data from message
-		struct pbc_wmessage* pData = setSubMessaage(PluginData, "Data");
-		const char *videoroom = json_string_value(json_object_get(message, "videoroom"));
+		JANUS_LOG(LOG_ERR, "13\n");
+		// //data from message
+		struct pbc_wmessage* pData = setSubMessaage(PluginData, "data");
+				JANUS_LOG(LOG_ERR, "14\n");
+		const char *videoroom = stringOfJson(message, "videoroom");
+				JANUS_LOG(LOG_ERR, "15\n");
 		setString(pData, "videoroom", videoroom);
-		const char *room = json_string_value(json_object_get(message, "room"));
-		setString(pData, "room", room);
+				JANUS_LOG(LOG_ERR, "16\n");
+		const char *room = stringOfJson(message, "room");
+				JANUS_LOG(LOG_ERR, "17\n");
+		if(room) {
+			setString(pData, "room", room);
+		} else {
+			JANUS_LOG(LOG_ERR, "no room\n");
+		}
+
+		JANUS_LOG(LOG_ERR, "18\n");
+
+		const char *description = stringOfJson(message, "description");
+				JANUS_LOG(LOG_ERR, "19\n");
+		if(description) {
+					JANUS_LOG(LOG_ERR, "20\n");
+			setString(pData, "description", description);
+		}
+
+				JANUS_LOG(LOG_ERR, "21\n");
+		const char *idstr = stringOfJson(message, "id");
+				JANUS_LOG(LOG_ERR, "22\n");
+		if(idstr) {
+					JANUS_LOG(LOG_ERR, "23\n");
+			setString(pData, "id", idstr);
+		}
+		gint64 private_id = integerOfJson(message, "private_id");
+		if(private_id >= 0) {
+			setInt64(pData, "private_id", private_id);
+		}
+				JANUS_LOG(LOG_ERR, "24\n");
+		json_t *permanent = json_object_get(message, "permanent");
+		if(permanent) {
+			setInt(pData, "permanent", json_boolean_value(permanent)?1:0);
+		}
+		const char *started = stringOfJson(message, "started");
+		if(started) {
+			setString(pData, "started", started);
+		}
+
+		JANUS_LOG(LOG_ERR, "25\n");
+		GList *combine_session = json_object_get(message, "combine_session");
+				JANUS_LOG(LOG_ERR, "26\n");
+		while(combine_session) {
+					JANUS_LOG(LOG_ERR, "27\n");
+			json_t * cs = combine_session->data;
+
+			gint64 num = integerOfJson(cs, "id");
+			if(num >= 0) {
+				setInt64(pData, "combine_session", num);
+			}
+
+					JANUS_LOG(LOG_ERR, "29\n");
+			combine_session = combine_session->next;
+		}
+
+		JANUS_LOG(LOG_ERR, "30\n");
+		json_t *publishers = json_object_get(message, "publishers");
+		JANUS_LOG(LOG_ERR, "31\n");
+		if (publishers && json_is_array(publishers)) {
+			size_t idx;
+	    json_t *item;
+	    json_array_foreach(publishers, idx, item) {
+	        /* 如果确定每个元素都是对象，可继续解析字段 */
+	        if (!json_is_object(item)) {
+	            fprintf(stderr, "attendee[%zu] is not an object\n", idx);
+	            continue;
+	        }
+
+	        /* 举例：取出对象里的 name / email 字段 */
+	        const char *name  = json_string_value(json_object_get(item, "name"));
+	        const char *email = json_string_value(json_object_get(item, "email"));
+
+					JANUS_LOG(LOG_ERR, "32\n");
+					json_t *publisher = item;
+					JANUS_LOG(LOG_ERR, "33\n");
+					struct pbc_wmessage* pPublisher = setSubMessaage(pData, "publisher");
+					JANUS_LOG(LOG_ERR, "34\n");
+					const char *id = stringOfJson(publisher, "id");
+					setString(pPublisher, "id", id);
+
+					const char *audio_codec = stringOfJson(publisher, "audio_codec");
+					if(audio_codec) {
+						setString(pPublisher, "audio_codec", audio_codec);
+					}
+
+					const char *video_codec = stringOfJson(publisher, "video_codec");
+					if(video_codec) {
+						setString(pPublisher, "video_codec", video_codec);
+					}
+
+					gint64 talking = integerOfJson(publisher, "talking");
+					if(talking >= 0) {
+						setInt(pData, "talking", (int)talking);
+					}
+
+					JANUS_LOG(LOG_ERR, "35\n");
+					//streaming
+					json_t *streams = json_object_get(publisher, "streams");
+					if(streams && json_is_array(streams)) {
+						size_t idx1;
+						json_t *item1;
+						json_array_foreach(streams, idx1, item1) {
+								/* 如果确定每个元素都是对象，可继续解析字段 */
+								if (!json_is_object(item1)) {
+										fprintf(stderr, "attendee[%zu] is not an object\n", idx1);
+										continue;
+								}
+
+								json_t *stream = item1;
+								struct pbc_wmessage* pStream = setSubMessaage(pPublisher, "stream");
+								fillupStream(stream, pStream);
+						}
+					}
+
+	        /* 如果想把整个子对象打印成字符串，可用 json_dumps */
+	        // char *txt = json_dumps(item, JSON_COMPACT);
+	        // printf("  raw: %s\n", txt);
+	        // free(txt);
+	    }
+		}
+
+
+
+		JANUS_LOG(LOG_ERR, "36\n");
+		json_t *attendees = json_object_get(message, "attendees");
+		if(attendees && json_is_array(attendees)) {
+				size_t idx;
+				json_t *item;
+				json_array_foreach(attendees, idx, item) {
+						/* 如果确定每个元素都是对象，可继续解析字段 */
+						if (!json_is_object(item)) {
+								fprintf(stderr, "attendees[%zu] is not an object\n", idx);
+								continue;
+						}
+
+						json_t *attendee = item;
+						JANUS_LOG(LOG_ERR, "39\n");
+						struct pbc_wmessage* pattendee = setSubMessaage(pData, "attendee");
+						JANUS_LOG(LOG_ERR, "40\n");
+						const char *id = stringOfJson(attendee, "id");
+						JANUS_LOG(LOG_ERR, "41\n");
+						setString(pattendee, "id", id);
+						JANUS_LOG(LOG_ERR, "42\n");
+				}
+		}
+
+
+		JANUS_LOG(LOG_ERR, "43\n");
+		json_t *joining = json_object_get(message, "joining");
+		JANUS_LOG(LOG_ERR, "44\n");
+		if(joining) {
+			JANUS_LOG(LOG_ERR, "46\n");
+			struct pbc_wmessage* pJoining = setSubMessaage(pData, "joining");
+			JANUS_LOG(LOG_ERR, "47\n");
+			const char *id = stringOfJson(joining, "id");
+			JANUS_LOG(LOG_ERR, "48\n");
+			setString(pJoining, "id", id);
+			JANUS_LOG(LOG_ERR, "49\n");
+		}
+
+
+		JANUS_LOG(LOG_ERR, "30\n");
+		json_t *streams = json_object_get(message, "streams");
+		JANUS_LOG(LOG_ERR, "31\n");
+		if(streams && json_is_array(streams)) {
+			size_t idx1;
+			json_t *item1;
+			json_array_foreach(streams, idx1, item1) {
+					/* 如果确定每个元素都是对象，可继续解析字段 */
+					if (!json_is_object(item1)) {
+							fprintf(stderr, "attendee[%zu] is not an object\n", idx1);
+							continue;
+					}
+
+					json_t *stream = item1;
+					struct pbc_wmessage* pStream = setSubMessaage(pData, "stream");
+					fillupStream(stream, pStream);
+			}
+		}
+
+		JANUS_LOG(LOG_ERR, "36\n");
+		const char *configured = stringOfJson(message, "configured");
+		if(configured) {
+			JANUS_LOG(LOG_ERR, "23\n");
+			setString(pData, "configured", configured);
+		}
+
 
 		struct pbc_slice slice;
 		pbc_wmessage_buffer(JanusPluginData, &slice);
 
+		JANUS_LOG(LOG_ERR, "50: %d\n", slice.len);
 		//std::string result = std::string((const char *)slice.buffer, slice.len);
 		janus_session_notify_event(session, NULL, slice.buffer, slice.len);
+		JANUS_LOG(LOG_ERR, "51\n");
 		pbc_wmessage_delete(JanusPluginData);
-
+		JANUS_LOG(LOG_ERR, "52\n");
 
 	janus_session_notify_event(session, event, NULL, 0);
 
@@ -4513,6 +4804,23 @@ gboolean janus_plugin_auth_signature_contains(janus_plugin *plugin, const char *
 }
 
 
+// 信号处理函数：打印调用栈并退出
+void handle_signal(int signum) {
+    void *callstack[100];
+    int frame_count = backtrace(callstack, 100); // 获取调用栈帧
+    char **frame_strings = backtrace_symbols(callstack, frame_count); // 转换为符号
+
+    printf("捕获到信号 %d（%s），调用栈如下：\n", signum,
+           signum == SIGSEGV ? "段错误" :
+           signum == SIGABRT ? "异常终止" : "未知错误");
+    for (int i = 0; i < frame_count; i++) {
+        printf("  [%d] %s\n", i, frame_strings[i]);
+    }
+
+    free(frame_strings); // 释放动态分配的符号字符串
+    exit(1); // 退出程序
+}
+
 /* Main */
 gint main(int argc, char *argv[]) {
 	/* Core dumps may be disallowed by parent of this process; change that */
@@ -4526,6 +4834,11 @@ gint main(int argc, char *argv[]) {
 	signal(SIGINT, janus_handle_signal);
 	signal(SIGTERM, janus_handle_signal);
 	atexit(janus_termination_handler);
+
+	signal(SIGSEGV, handle_signal); // 段错误
+signal(SIGABRT, handle_signal); // 主动调用 abort() 触发
+signal(SIGILL, handle_signal);  // 非法指令
+signal(SIGFPE, handle_signal);  // 浮点异常（如除零）
 
 	JANUS_PRINT("Janus version: %d (%s)\n", janus_version, janus_version_string);
 	JANUS_PRINT("Janus commit: %s\n", janus_build_git_sha);

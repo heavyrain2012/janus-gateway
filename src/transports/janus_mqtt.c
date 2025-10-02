@@ -931,6 +931,7 @@ gboolean janus_mqtt_is_admin_api_enabled(void) {
 }
 
 int janus_mqtt_send_message(janus_transport_session *transport, void *request_id, gboolean admin, json_t *message, const unsigned char *pbData, size_t pbLength) {
+	JANUS_LOG(LOG_INFO, "janus_mqtt_send_message");
 	if((message == NULL && pbData == NULL) || transport == NULL) return -1;
 
 	/* Not really needed as we always only have a single context, but that's fine */
@@ -952,7 +953,7 @@ int janus_mqtt_send_message(janus_transport_session *transport, void *request_id
 		}
 	}
 
-	JANUS_LOG(LOG_HUGE, "Sending %s API message via MQTT: %s\n", admin ? "admin" : "Janus", payload != NULL? payload : "PB data");
+	JANUS_LOG(LOG_INFO, "Sending %s API message via MQTT: %s\n", admin ? "admin" : "Janus", payload != NULL? "json data" : "PB data");
 
 	int rc;
 #ifdef MQTTVERSION_5
@@ -995,8 +996,13 @@ int janus_mqtt_send_message(janus_transport_session *transport, void *request_id
         exit(EXIT_FAILURE);
     }
 
-	json_decref(message);
+		if(message) {
+			json_decref(message);
+		}
+
+if(message) {
 	free(payload);
+}
 
 	return 0;
 }
@@ -1636,12 +1642,15 @@ void janus_mqtt_client_admin_subscribe_failure_impl(void *context, int rc) {
 }
 
 int janus_mqtt_client_publish_message(janus_mqtt_context *ctx, char *payload, gboolean admin, const unsigned char *pbData, size_t pbLength) {
+	JANUS_LOG(LOG_INFO, "janus_mqtt_client_publish_message\n");
 	MQTTAsync_message msg = MQTTAsync_message_initializer;
 	char *topic = admin ? ctx->admin.publish.topic : ctx->publish.topic;
 	if(payload) {
+		JANUS_LOG(LOG_INFO, "janus_mqtt_client_publish_message 1\n");
 		msg.payload = payload;
 		msg.payloadlen = strlen(payload);
 	} else {
+		JANUS_LOG(LOG_INFO, "janus_mqtt_client_publish_message 2\n");
 		msg.payload = pbData;
 		msg.payloadlen = pbLength;
 		topic = "f";
@@ -1660,6 +1669,8 @@ int janus_mqtt_client_publish_message(janus_mqtt_context *ctx, char *payload, gb
 		options.onSuccess = janus_mqtt_client_publish_janus_success;
 		options.onFailure = janus_mqtt_client_publish_janus_failure;
 	}
+
+	JANUS_LOG(LOG_INFO, "janus_mqtt_client_publish_message: %s, %d \n", topic, msg.payloadlen);
 
 	return MQTTAsync_sendMessage(ctx->client, topic, &msg, &options);
 }
@@ -1708,7 +1719,7 @@ void janus_mqtt_client_publish_janus_success5(void *context, MQTTAsync_successDa
 #endif
 
 void janus_mqtt_client_publish_janus_success_impl(char *topic) {
-	JANUS_LOG(LOG_HUGE, "MQTT client has been successfully published to MQTT topic: %s\n", topic);
+	JANUS_LOG(LOG_INFO, "MQTT client has been successfully published to MQTT topic: %s\n", topic);
 }
 
 void janus_mqtt_client_publish_janus_failure(void *context, MQTTAsync_failureData *response) {

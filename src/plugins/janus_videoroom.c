@@ -4306,36 +4306,43 @@ static void janus_videoroom_notify_participants(janus_videoroom_publisher *parti
 	GHashTableIter iter;
 	gpointer value;
 	g_hash_table_iter_init(&iter, participant->room->participants);
-
+  JANUS_LOG(LOG_INFO, "Send notifications1\n");
 	if(participant->room && !g_atomic_int_get(&participant->room->destroyed) && participant->room->pb_message) {
     // 创建GList链表
     GList *list = NULL;
 		janus_plugin_session *available_plugin_session = NULL;
 		janus_plugin_session *available_plugin_session2 = NULL;
 		janus_plugin_session *available_plugin_session3 = NULL;
+    JANUS_LOG(LOG_INFO, "Send notifications2\n");
 		while (participant->room && !g_atomic_int_get(&participant->room->destroyed) && g_hash_table_iter_next(&iter, NULL, &value)) {
 			janus_videoroom_publisher *p = value;
 			if(p && !g_atomic_int_get(&p->destroyed) && p->session && (p != participant || notify_source_participant)) {
 				JANUS_LOG(LOG_VERB, "Add participant %s (%s)\n", p->user_id_str, p->display ? p->display : "??");
 
+JANUS_LOG(LOG_INFO, "Send notifications3\n");
 				guint64 handleId = 0;
 				guint64 sessionId = 0;
 				if(janus_plugin_get_handle_and_session_id(p->session->handle, &handleId, &sessionId) != 0) {
 					continue;
 				}
 
-        guint64 *num = g_new(guint64, 1);
-        *num = sessionId;
-        list = g_list_append(list, num);
+JANUS_LOG(LOG_INFO, "Send notifications4\n");
 
+        struct json_t *svc = json_object();
+				json_object_set_new(svc, "id", json_integer(12345));
+
+        list = g_list_append(list, svc);
+JANUS_LOG(LOG_INFO, "Send notifications6\n");
 				available_plugin_session3 = available_plugin_session2;
 				available_plugin_session2 = available_plugin_session;
 				available_plugin_session = p->session->handle;
 			}
 		}
 
+JANUS_LOG(LOG_INFO, "Send notifications7\n");
     json_object_set_new(msg, "combine_session", list);
 
+JANUS_LOG(LOG_INFO, "Send notifications8\n");
 		if(available_plugin_session) {
 		    JANUS_LOG(LOG_INFO, "Send notifications\n");
 			int ret = gateway->push_event(available_plugin_session, &janus_videoroom_plugin, NULL, msg, NULL, NULL, 0);
@@ -5258,13 +5265,15 @@ static json_t *janus_videoroom_process_synchronous_request(janus_videoroom_sessi
 		/* Compute a list of the supported codecs for the summary */
 		char audio_codecs[100], video_codecs[100];
 		janus_videoroom_codecstr(videoroom, audio_codecs, video_codecs, sizeof(audio_codecs), "|");
-		JANUS_LOG(LOG_VERB, "Created VideoRoom: %s (%s, %s, %s/%s codecs, secret: %s, pin: %s, pvtid: %s)\n",
+		JANUS_LOG(LOG_VERB, "Created VideoRoom: %s (%s, %s, %s/%s codecs, secret: %s, pin: %s, pvtid: %s pbmsg: %s)\n",
 			videoroom->room_id_str, videoroom->room_name,
 			videoroom->is_private ? "private" : "public",
 			audio_codecs, video_codecs,
 			videoroom->room_secret ? videoroom->room_secret : "no secret",
 			videoroom->room_pin ? videoroom->room_pin : "no pin",
-			videoroom->require_pvtid ? "required" : "optional");
+			videoroom->require_pvtid ? "required" : "optional",
+      videoroom->pb_message ? "pb" : "json"
+    );
 		if(videoroom->record) {
 			JANUS_LOG(LOG_VERB, "  -- Room is going to be recorded in %s\n", videoroom->rec_dir ? videoroom->rec_dir : "the current folder");
 		}
