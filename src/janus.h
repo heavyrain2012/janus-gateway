@@ -163,6 +163,8 @@ int janus_process_incoming_admin_request(janus_request *request);
  * @returns 0 on success, a negative integer otherwise
  */
 int janus_process_success(janus_request *request, json_t *payload);
+
+int janus_process_ack(janus_request *request, guint64 session_id, const gchar *transaction_text, const gchar* hinttext);
 /*! \brief Method to return an error Janus response message (JSON) to the browser
  * @param[in] request The request instance and its source
  * @param[in] session_id Janus session identifier this error refers to

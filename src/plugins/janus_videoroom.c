@@ -4812,7 +4812,7 @@ static int janus_videoroom_access_room(json_t *root, gboolean check_modify, gboo
 	return 0;
 }
 
-extern void use_pb();
+extern void use_pb(void);
 /* Helper method to process synchronous requests */
 static json_t *janus_videoroom_process_synchronous_request(janus_videoroom_session *session, json_t *message) {
 	json_t *request = json_object_get(message, "request");

@@ -103,7 +103,8 @@ static char *api_secret = NULL, *admin_api_secret = NULL;
 
 /* JSON parameters */
 static int janus_process_error_string(janus_request *request, uint64_t session_id, const char *transaction, gint error, gchar *error_string);
-
+static int setInt64(struct pbc_wmessage *msg, const char *key, int64_t value);
+static int setString(struct pbc_wmessage *msg, const char *key, const char *value);
 static struct janus_json_parameter incoming_request_parameters[] = {
 	{"transaction", JSON_STRING, JANUS_JSON_PARAM_REQUIRED},
 	{"janus", JSON_STRING, JANUS_JSON_PARAM_REQUIRED},
@@ -732,7 +733,7 @@ static gboolean janus_check_sessions(gpointer user_data) {
 					if(source) {
 						json_t *event = janus_create_message("timeout", session->session_id, NULL);
 						/* Send this to the transport client and notify the session's over */
-						source->transport->send_message(source->instance, NULL, FALSE, event, NULL, 0);
+						source->transport->send_message(source->instance, NULL, FALSE, event, NULL, 0, NULL);
 						source->transport->session_over(source->instance, session->session_id, TRUE, FALSE);
 					}
 					janus_request_unref(source);
@@ -837,9 +838,9 @@ void janus_session_notify_event(janus_session *session, json_t *event, const uns
 			/* Send this to the transport client */
 			JANUS_LOG(LOG_HUGE, "Sending event to %s (%p)\n", source->transport->get_package(), source->instance);
 			if(event) {
-				source->transport->send_message(source->instance, NULL, FALSE, event, NULL, 0);
+				source->transport->send_message(source->instance, NULL, FALSE, event, NULL, 0, NULL);
 			} else {
-				source->transport->send_message(source->instance, NULL, FALSE, NULL, pbData, pbLength);
+				source->transport->send_message(source->instance, NULL, FALSE, NULL, pbData, pbLength, "event");
 			}
 		} else {
 			/* No transport, free the event */
@@ -1237,9 +1238,8 @@ int janus_process_incoming_request(janus_request *request) {
 	if(!strcasecmp(message_text, "keepalive")) {
 		/* Just a keep-alive message, reply with an ack */
 		JANUS_LOG(LOG_VERB, "Got a keep-alive on session %"SCNu64"\n", session_id);
-		json_t *reply = janus_create_message("ack", session_id, transaction_text);
-		/* Send the success reply */
-		ret = janus_process_success(request, reply);
+		/* Send the ack reply */
+		ret = janus_process_ack(request, session_id, transaction_text, NULL);
 	} else if(!strcasecmp(message_text, "attach")) {
 		if(handle != NULL) {
 			/* Attach is a session-level command */
@@ -1898,12 +1898,8 @@ int janus_process_incoming_request(janus_request *request) {
 			/* Send the success reply */
 			ret = janus_process_success(request, reply);
 		} else if(result->type == JANUS_PLUGIN_OK_WAIT) {
-			/* The plugin received the request but didn't process it yet, send an ack (asynchronous notifications may follow) */
-			json_t *reply = janus_create_message("ack", session_id, transaction_text);
-			if(result->text)
-				json_object_set_new(reply, "hint", json_string(result->text));
 			/* Send the success reply */
-			ret = janus_process_success(request, reply);
+			ret = janus_process_ack(request, session_id, transaction_text, result->text);
 		} else {
 			/* Something went horribly wrong! */
 			ret = janus_process_error_string(request, session_id, transaction_text, JANUS_ERROR_PLUGIN_MESSAGE,
@@ -2002,9 +1998,7 @@ int janus_process_incoming_request(janus_request *request) {
 trickledone:
 		janus_mutex_unlock(&handle->mutex);
 		/* We reply right away, not to block the web server... */
-		json_t *reply = janus_create_message("ack", session_id, transaction_text);
-		/* Send the success reply */
-		ret = janus_process_success(request, reply);
+		ret = janus_process_ack(request, session_id, transaction_text, NULL);
 	} else {
 		ret = janus_process_error(request, session_id, transaction_text, JANUS_ERROR_UNKNOWN_REQUEST, "Unknown request '%s'", message_text);
 	}
@@ -3150,13 +3144,38 @@ jsondone:
 	return ret;
 }
 
+int janus_process_ack(janus_request *request, guint64 session_id, const gchar *transaction_text, const gchar* hinttext) {
+	if(!request)
+		return -1;
+
+	JANUS_LOG(LOG_HUGE, "Sending %s API response to %s (%p)\n", request->admin ? "admin" : "Janus", request->transport->get_package(), request->instance);
+	if(!m_supportPb) {
+		json_t *reply = janus_create_message("ack", session_id, transaction_text);
+		if(hinttext)
+			json_object_set_new(reply, "hint", hinttext);
+		return request->transport->send_message(request->instance, request->request_id, request->admin, reply, NULL, 0, NULL);
+	} else {
+		struct pbc_wmessage* ackData = pbc_wmessage_new(m_env, "Ack");
+		setString(ackData, "transaction", (const char *)transaction_text);
+		setInt64(ackData, "session_id", session_id);
+		if(hinttext) {
+			setString(ackData, "hint", hinttext);
+		}
+		struct pbc_slice slice;
+		pbc_wmessage_buffer(ackData, &slice);
+		int ret = request->transport->send_message(request->instance, request->request_id, request->admin, NULL, slice.buffer, slice.len, "ack");
+		pbc_wmessage_delete(ackData);
+		return ret;
+	}
+}
+
 int janus_process_success(janus_request *request, json_t *payload)
 {
 	if(!request || !payload)
 		return -1;
 	/* Pass to the right transport plugin */
 	JANUS_LOG(LOG_HUGE, "Sending %s API response to %s (%p)\n", request->admin ? "admin" : "Janus", request->transport->get_package(), request->instance);
-	return request->transport->send_message(request->instance, request->request_id, request->admin, payload, NULL, 0);
+	return request->transport->send_message(request->instance, request->request_id, request->admin, payload, NULL, 0, NULL);
 }
 
 static int janus_process_error_string(janus_request *request, uint64_t session_id, const char *transaction, gint error, gchar *error_string)
@@ -3172,7 +3191,7 @@ static int janus_process_error_string(janus_request *request, uint64_t session_i
 	json_object_set_new(error_data, "reason", json_string(error_string));
 	json_object_set_new(reply, "error", error_data);
 	/* Pass to the right transport plugin */
-	return request->transport->send_message(request->instance, request->request_id, request->admin, reply, NULL, 0);
+	return request->transport->send_message(request->instance, request->request_id, request->admin, reply, NULL, 0, NULL);
 }
 
 int janus_process_error(janus_request *request, uint64_t session_id, const char *transaction, gint error, const char *format, ...)
@@ -3677,7 +3696,7 @@ janus_plugin *janus_plugin_find(const gchar *package) {
 	return NULL;
 }
 
-void use_pb() {
+void use_pb(void) {
 	m_supportPb = 1;
 }
 

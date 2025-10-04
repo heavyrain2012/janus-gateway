@@ -69,7 +69,7 @@ const char *janus_mqtt_get_author(void);
 const char *janus_mqtt_get_package(void);
 gboolean janus_mqtt_is_janus_api_enabled(void);
 gboolean janus_mqtt_is_admin_api_enabled(void);
-int janus_mqtt_send_message(janus_transport_session *transport, void *request_id, gboolean admin, json_t *message, const unsigned char *pbData, size_t pbLength);
+int janus_mqtt_send_message(janus_transport_session *transport, void *request_id, gboolean admin, json_t *message, const unsigned char *pbData, size_t pbLength, const char *topic);
 void janus_mqtt_session_created(janus_transport_session *transport, guint64 session_id);
 void janus_mqtt_session_over(janus_transport_session *transport, guint64 session_id, gboolean timeout, gboolean claimed);
 void janus_mqtt_session_claimed(janus_transport_session *transport, guint64 session_id);
@@ -245,7 +245,7 @@ void janus_mqtt_client_publish_admin_success(void *context, MQTTAsync_successDat
 void janus_mqtt_client_publish_admin_failure(void *context, MQTTAsync_failureData *response);
 void janus_mqtt_client_publish_status_success(void *context, MQTTAsync_successData *response);
 void janus_mqtt_client_publish_status_failure(void *context, MQTTAsync_failureData *response);
-int janus_mqtt_client_publish_message(janus_mqtt_context *ctx, char *payload, gboolean admin, const unsigned char *pbData, size_t pbLength);
+int janus_mqtt_client_publish_message(janus_mqtt_context *ctx, char *payload, gboolean admin, const unsigned char *pbData, size_t pbLength, const char *pbTopic);
 int janus_mqtt_client_get_response_code(MQTTAsync_failureData *response);
 #ifdef MQTTVERSION_5
 /* MQTT v5 interface callbacks */
@@ -930,7 +930,7 @@ gboolean janus_mqtt_is_admin_api_enabled(void) {
 	return janus_mqtt_admin_api_enabled_;
 }
 
-int janus_mqtt_send_message(janus_transport_session *transport, void *request_id, gboolean admin, json_t *message, const unsigned char *pbData, size_t pbLength) {
+int janus_mqtt_send_message(janus_transport_session *transport, void *request_id, gboolean admin, json_t *message, const unsigned char *pbData, size_t pbLength, const char *topic) {
 	if((message == NULL && pbData == NULL) || transport == NULL) return -1;
 
 	/* Not really needed as we always only have a single context, but that's fine */
@@ -979,10 +979,10 @@ int janus_mqtt_send_message(janus_transport_session *transport, void *request_id
 		if(response_topic != NULL) g_free(response_topic);
 		MQTTProperties_free(&properties);
 	} else {
-		rc = janus_mqtt_client_publish_message(ctx, payload, admin, pbData, pbLength);
+		rc = janus_mqtt_client_publish_message(ctx, payload, admin, pbData, pbLength, topic);
 	}
 #else
-	rc = janus_mqtt_client_publish_message(ctx, payload, admin, pbData, pbLength);
+	rc = janus_mqtt_client_publish_message(ctx, payload, admin, pbData, pbLength, topic);
 #endif
 
 	if(rc != MQTTASYNC_SUCCESS) {
@@ -1640,7 +1640,7 @@ void janus_mqtt_client_admin_subscribe_failure_impl(void *context, int rc) {
 	}
 }
 
-int janus_mqtt_client_publish_message(janus_mqtt_context *ctx, char *payload, gboolean admin, const unsigned char *pbData, size_t pbLength) {
+int janus_mqtt_client_publish_message(janus_mqtt_context *ctx, char *payload, gboolean admin, const unsigned char *pbData, size_t pbLength, const char *pbTopic) {
 	MQTTAsync_message msg = MQTTAsync_message_initializer;
 	char *topic = admin ? ctx->admin.publish.topic : ctx->publish.topic;
 	if(payload) {
@@ -1649,7 +1649,7 @@ int janus_mqtt_client_publish_message(janus_mqtt_context *ctx, char *payload, gb
 	} else {
 		msg.payload = pbData;
 		msg.payloadlen = pbLength;
-		topic = "f";
+		topic = pbTopic;
 	}
 
 	msg.qos = ctx->publish.qos;

@@ -212,7 +212,7 @@ struct janus_transport {
 	 * @param[in] admin Whether this is an admin API or a Janus API message
 	 * @param[in] message The message data as a Jansson json_t object
 	 * @returns 0 on success, a negative integer otherwise */
-	int (* const send_message)(janus_transport_session *transport, void *request_id, gboolean admin, json_t *message, const unsigned char *pbData, size_t pbLength);
+	int (* const send_message)(janus_transport_session *transport, void *request_id, gboolean admin, json_t *message, const unsigned char *pbData, size_t pbLength, const char *topic);
 	/*! \brief Method to notify the transport plugin that a new session has been created from this transport
 	 * \note A transport plugin may decide to close the connection as a result of such an event
 	 * @param[in] transport Pointer to the transport session instance
