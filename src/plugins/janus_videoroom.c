@@ -4309,7 +4309,7 @@ static void janus_videoroom_notify_participants(janus_videoroom_publisher *parti
 
 	if(participant->room && !g_atomic_int_get(&participant->room->destroyed) && participant->room->pb_message) {
     // 创建GList链表
-    GList *list = NULL;
+    json_t *int64_array = json_array();
 		janus_plugin_session *available_plugin_session = NULL;
 		janus_plugin_session *available_plugin_session2 = NULL;
 		janus_plugin_session *available_plugin_session3 = NULL;
@@ -4324,9 +4324,9 @@ static void janus_videoroom_notify_participants(janus_videoroom_publisher *parti
 					continue;
 				}
 
-        guint64 *num = g_new(guint64, 1);
-        *num = sessionId;
-        list = g_list_append(list, num);
+        json_t *num_node = json_integer(sessionId);
+        // 将节点添加到数组（数组会接管节点的引用计数）
+        json_array_append_new(int64_array, num_node);
 
 				available_plugin_session3 = available_plugin_session2;
 				available_plugin_session2 = available_plugin_session;
@@ -4334,7 +4334,7 @@ static void janus_videoroom_notify_participants(janus_videoroom_publisher *parti
 			}
 		}
 
-    json_object_set_new(msg, "combine_session", list);
+    json_object_set_new(msg, "combine_session", int64_array);
 
 		if(available_plugin_session) {
 		    JANUS_LOG(LOG_INFO, "Send notifications\n");
@@ -4812,7 +4812,7 @@ static int janus_videoroom_access_room(json_t *root, gboolean check_modify, gboo
 	return 0;
 }
 
-extern void user_pb();
+extern void use_pb();
 /* Helper method to process synchronous requests */
 static json_t *janus_videoroom_process_synchronous_request(janus_videoroom_session *session, json_t *message) {
 	json_t *request = json_object_get(message, "request");
@@ -5195,7 +5195,7 @@ static json_t *janus_videoroom_process_synchronous_request(janus_videoroom_sessi
 		videoroom->notify_joining = notify_joining ? json_is_true(notify_joining) : FALSE;
 		videoroom->pb_message = pb_message ? json_is_true(pb_message) : FALSE;
     if(videoroom->pb_message) {
-      user_pb();
+      use_pb();
     }
 		if(record) {
 			videoroom->record = json_is_true(record);

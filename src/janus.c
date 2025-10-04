@@ -3810,7 +3810,7 @@ int janus_plugin_push_event(janus_plugin_session *plugin_session, janus_plugin *
 		const char *merged_sdp = json_string_value(json_object_get(merged_jsep, "sdp"));
 
 		if(m_supportPb) {
-			struct pbc_wmessage* pbJsep = setSubMessaage(PluginData, "jsep");
+			struct pbc_wmessage* pbJsep = setSubMessaage(JanusPluginData, "jsep");
 			setString(pbJsep, "type", merged_sdp_type);
 			setString(pbJsep, "sdp", merged_sdp);
 		}
@@ -3823,7 +3823,7 @@ int janus_plugin_push_event(janus_plugin_session *plugin_session, janus_plugin *
 		}
 	}
 	/* Send the event */
-	JANUS_LOG(LOG_VERB, "[%"SCNu64"] Sending event to transport...\n", ice_handle->handle_id);
+	JANUS_LOG(LOG_VERB, "[%"SCNu64"] Sending event to transport %s data...\n", ice_handle->handle_id, m_supportPb>0?"pb":"json");
 
 	if(m_supportPb) {
 		setString(JanusPluginData, "janus", "event");
@@ -3834,7 +3834,7 @@ int janus_plugin_push_event(janus_plugin_session *plugin_session, janus_plugin *
 		}
 		setString(PluginData, "plugin", plugin->get_package());
 
-		char *txt = json_dumps(message, JSON_COMPACT);
+		char *txt = json_dumps(message, JSON_INDENT(0) | JSON_PRESERVE_ORDER);
 		setString(PluginData, "data", txt);
 		free(txt);
 
