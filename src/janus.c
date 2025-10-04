@@ -656,6 +656,9 @@ static janus_callbacks janus_handler_plugin =
 ///@}
 
 
+static struct pbc_env* m_env = NULL;
+static int m_supportPb = 0;
+
 /* Core Sessions */
 static janus_mutex sessions_mutex = JANUS_MUTEX_INITIALIZER;
 static GHashTable *sessions = NULL;
@@ -3675,7 +3678,7 @@ janus_plugin *janus_plugin_find(const gchar *package) {
 }
 
 void use_pb() {
-	m_supportPb = true;
+	m_supportPb = 1;
 }
 
 int janus_plugin_get_handle_and_session_id(janus_plugin_session *plugin_session, guint64 *handleId, guint64 *sessionId) {
@@ -4519,9 +4522,6 @@ gboolean janus_plugin_auth_is_signature_valid(janus_plugin *plugin, const char *
 gboolean janus_plugin_auth_signature_contains(janus_plugin *plugin, const char *token, const char *descriptor) {
 	return janus_auth_check_signature_contains(token, plugin->get_package(), descriptor);
 }
-
-static struct pbc_env* m_env = NULL;
-static bool m_supportPb = false;
 
 // 信号处理函数：打印调用栈并退出
 void handle_signal(int signum) {
