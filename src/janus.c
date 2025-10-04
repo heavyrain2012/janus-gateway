@@ -3832,7 +3832,8 @@ int janus_plugin_push_event(janus_plugin_session *plugin_session, janus_plugin *
 		if(transaction) {
 			setString(JanusPluginData, "transaction", transaction);
 		}
-		setString(PluginData, "plugin", plugin->get_package());
+		//只有一个plugin（videoroom），这里没有必要了
+		//setString(PluginData, "plugin", plugin->get_package());
 
 		char *txt = json_dumps(message, JSON_INDENT(0) | JSON_PRESERVE_ORDER);
 		setString(PluginData, "data", txt);
