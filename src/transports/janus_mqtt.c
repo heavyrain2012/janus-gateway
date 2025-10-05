@@ -41,6 +41,7 @@
 #include <errno.h>
 #include <arpa/inet.h>
 #include <sys/types.h>
+#include <zlib.h>
 
 #include <MQTTAsync.h>
 
@@ -1260,50 +1261,109 @@ void janus_mqtt_client_connection_lost(void *context, char *cause) {
 	}
 }
 
+#define CHUNK_SIZE 1024  // 每次处理的块大小
+/**
+ * gzip格式内存数据解压
+ * @param src 输入的压缩数据（gzip格式）
+ * @param src_len 压缩数据长度
+ * @param dest 输出的解压数据（需手动free）
+ * @param dest_len 输出的解压数据长度
+ * @return 0=成功，非0=失败
+ */
+int gzip_decompress(const unsigned char *src, size_t src_len,
+                    unsigned char **dest, size_t *dest_len) {
+    z_stream zs;                  // zlib解压流结构体
+    int ret;
+    unsigned char out[CHUNK_SIZE]; // 临时输出缓冲区
+
+    // 初始化解压流
+    memset(&zs, 0, sizeof(zs));
+    // MAX_WBITS + 16 表示处理gzip格式（而非zlib格式）
+    if ((ret = inflateInit2(&zs, MAX_WBITS + 16)) != Z_OK) {
+        fprintf(stderr, "inflateInit2 failed: %d\n", ret);
+        return ret;
+    }
+
+    // 分配输出缓冲区（初始大小设为src_len的5倍，根据实际场景调整）
+    *dest = (unsigned char *)malloc(src_len * 5);
+    if (!*dest) {
+        inflateEnd(&zs);
+        return Z_MEM_ERROR;
+    }
+    *dest_len = 0;
+
+    // 设置输入数据
+    zs.next_in = (unsigned char *)src;
+    zs.avail_in = src_len;
+
+    // 循环解压数据
+    do {
+        zs.next_out = out;
+        zs.avail_out = CHUNK_SIZE;
+
+        // 执行解压
+        ret = inflate(&zs, Z_NO_FLUSH);
+        if (ret == Z_STREAM_ERROR) {
+            fprintf(stderr, "inflate failed: %d\n", ret);
+            free(*dest);
+            inflateEnd(&zs);
+            return ret;
+        }
+
+        // 将临时缓冲区的数据复制到输出缓冲区
+        size_t have = CHUNK_SIZE - zs.avail_out;
+        *dest = (unsigned char *)realloc(*dest, *dest_len + have);
+        memcpy(*dest + *dest_len, out, have);
+        *dest_len += have;
+
+    } while (ret != Z_STREAM_END); // 直到解压完成
+
+    // 释放解压流资源
+    inflateEnd(&zs);
+    return Z_OK;
+}
+
 int janus_mqtt_client_message_arrived(void *context, char *topicName, int topicLen, MQTTAsync_message *message) {
 	int ret = FALSE;
 	janus_mqtt_context *ctx = (janus_mqtt_context *)context;
 	gchar *topic = g_strndup(topicName, topicLen);
-	const gboolean janus = janus_mqtt_api_enabled_ && !strcasecmp(topic, ctx->subscribe.topic);
-	const gboolean admin = janus_mqtt_admin_api_enabled_ && !strcasecmp(topic, ctx->admin.subscribe.topic);
-	g_free(topic);
 
-	if((janus || admin) && message->payloadlen) {
-		JANUS_LOG(LOG_HUGE, "Receiving %s API message over MQTT: %.*s\n", admin ? "admin" : "Janus", message->payloadlen, (char*)message->payload);
-
-		json_error_t error;
-		json_t *root = json_loadb(message->payload, message->payloadlen, 0, &error);
-
-#ifdef MQTTVERSION_5
-		if(ctx->connect.mqtt_version == MQTTVERSION_5 && !admin) {
-			/* Save MQTT 5 properties copy to the state */
-			const gchar *transaction = g_strdup(json_string_value(json_object_get(root, "transaction")));
-			if(transaction == NULL) {
-				JANUS_LOG(LOG_WARN, "`transaction` is missing or not a string\n");
-				goto done;
+	unsigned char *decompressed = message->payload;
+	size_t decompressed_len = message->payloadlen;
+	int unziped = 0;
+	if(!strcasecmp(topic, "zto")) {
+			ret = gzip_decompress(message->payload, message->payloadlen, &decompressed, &decompressed_len);
+			if (ret != Z_OK) {
+					fprintf(stderr, "Decompression failed\n");
+					goto done;;
 			}
 
-			MQTTProperties *properties = g_malloc(sizeof(MQTTProperties));
-			*properties = MQTTProperties_copy(&message->properties);
+			unziped = 1;
+			g_free(topic);
+			topic = g_strdup(ctx->subscribe.topic);
+			ret = FALSE;
+	}
+	const gboolean janus = janus_mqtt_api_enabled_ && !strcasecmp(topic, ctx->subscribe.topic);
+	const gboolean admin = janus_mqtt_admin_api_enabled_ && !strcasecmp(topic, ctx->admin.subscribe.topic);
 
-			janus_mqtt_transaction_state *state = g_malloc(sizeof(janus_mqtt_transaction_state));
-			state->properties = properties;
-			state->created_at = janus_get_monotonic_time();
+	if((janus || admin) && decompressed_len) {
+		JANUS_LOG(LOG_HUGE, "Receiving %s API message over MQTT: %.*s\n", admin ? "admin" : "Janus", decompressed_len, (char*)decompressed);
 
-			g_rw_lock_writer_lock(&janus_mqtt_transaction_states_lock);
-			g_hash_table_insert(janus_mqtt_transaction_states, (gpointer) transaction, (gpointer) state);
-			g_rw_lock_writer_unlock(&janus_mqtt_transaction_states_lock);
+		json_error_t error;
+		json_t *root = json_loadb(decompressed, decompressed_len, 0, &error);
+		if(!root) {
+			JANUS_LOG(LOG_ERR, "JSON error: on line %d: %s", error.line, error.text);
 		}
-#endif
-
 		ctx->gateway->incoming_request(&janus_mqtt_transport_, mqtt_session, NULL, admin, root, &error);
 	}
 
 	ret = TRUE;
 
 done:
+	g_free(topic);
 	MQTTAsync_freeMessage(&message);
 	MQTTAsync_free(topicName);
+	if(unziped) free(decompressed);
 	return ret;
 }
 
@@ -1640,9 +1700,89 @@ void janus_mqtt_client_admin_subscribe_failure_impl(void *context, int rc) {
 	}
 }
 
+/**
+ * 内存数据压缩为gzip格式
+ * @param src 输入的原始数据
+ * @param src_len 原始数据长度
+ * @param dest 输出的压缩数据（需手动free）
+ * @param dest_len 输出的压缩数据长度
+ * @param level 压缩级别（1-9，0=不压缩，Z_DEFAULT_COMPRESSION=6）
+ * @return 0=成功，非0=失败
+ */
+ int gzip_compress(const unsigned char *src, size_t src_len,
+                   unsigned char **dest, size_t *dest_len, int level)
+ {
+     if (level < 0) level = Z_DEFAULT_COMPRESSION;
+     if (level > 9) level = 9;
+
+     z_stream zs = {0};
+     int ret;
+
+     /* 1. 初始化：MAX_WBITS+16 表示 gzip 格式 */
+     if ((ret = deflateInit2(&zs, level, Z_DEFLATED,
+                             MAX_WBITS + 16, 8, Z_DEFAULT_STRATEGY)) != Z_OK)
+     {
+         fprintf(stderr, "deflateInit2 failed: %d\n", ret);
+         return ret;
+     }
+
+     /* 2. 一次性分配输出缓冲区，避免循环里反复 realloc */
+     size_t cap = src_len + (src_len >> 1) + 1024;   /* 1.5x + 1kB */
+     *dest = malloc(cap);
+     if (!*dest) {
+         deflateEnd(&zs);
+         return Z_MEM_ERROR;
+     }
+
+     zs.next_in  = (Bytef *)src;
+     zs.avail_in = (uInt)src_len;
+
+     *dest_len = 0;
+     unsigned char out[CHUNK_SIZE];
+
+     /* 3. 压缩主循环 */
+     do {
+         zs.next_out  = out;
+         zs.avail_out = CHUNK_SIZE;
+
+         ret = deflate(&zs, zs.avail_in ? Z_NO_FLUSH : Z_FINISH);
+         if (ret == Z_STREAM_ERROR) {          /* 唯一不可恢复错误 */
+             free(*dest);
+             deflateEnd(&zs);
+             return ret;
+         }
+
+         size_t produced = CHUNK_SIZE - zs.avail_out;
+         if (*dest_len + produced > cap) {     /* 理论上不会发生，保险 */
+             cap = *dest_len + produced + 1024;
+             unsigned char *tmp = realloc(*dest, cap);
+             if (!tmp) {
+                 free(*dest);
+                 deflateEnd(&zs);
+                 return Z_MEM_ERROR;
+             }
+             *dest = tmp;
+         }
+         memcpy(*dest + *dest_len, out, produced);
+         *dest_len += produced;
+
+     } while (ret != Z_STREAM_END);
+
+     /* 4. 把缓冲区 trim 到实际长度 */
+     unsigned char *tmp = realloc(*dest, *dest_len);
+     if (tmp) *dest = tmp;   /* 失败也无所谓，只是多占点内存 */
+
+     deflateEnd(&zs);
+     return Z_OK;
+ }
+
 int janus_mqtt_client_publish_message(janus_mqtt_context *ctx, char *payload, gboolean admin, const unsigned char *pbData, size_t pbLength, const char *pbTopic) {
 	MQTTAsync_message msg = MQTTAsync_message_initializer;
 	char *topic = admin ? ctx->admin.publish.topic : ctx->publish.topic;
+	char result[48];
+	unsigned char *compressed = NULL;
+	size_t compressed_len = 0;
+
 	if(payload) {
 		msg.payload = payload;
 		msg.payloadlen = strlen(payload);
@@ -1650,6 +1790,19 @@ int janus_mqtt_client_publish_message(janus_mqtt_context *ctx, char *payload, gb
 		msg.payload = pbData;
 		msg.payloadlen = pbLength;
 		topic = pbTopic;
+	}
+
+	if(msg.payloadlen > 1024) {
+		int ret = gzip_compress((unsigned char *)msg.payload, msg.payloadlen,
+												&compressed, &compressed_len, Z_DEFAULT_COMPRESSION);
+		if (ret == Z_OK) {
+			const char *prefix = "zip";
+			strcpy(result, prefix);
+			strcat(result, pbTopic);
+			topic = result;
+			msg.payload = compressed;
+			msg.payloadlen = compressed_len;
+		}
 	}
 
 	msg.qos = ctx->publish.qos;
@@ -1666,7 +1819,11 @@ int janus_mqtt_client_publish_message(janus_mqtt_context *ctx, char *payload, gb
 		options.onFailure = janus_mqtt_client_publish_janus_failure;
 	}
 
-	return MQTTAsync_sendMessage(ctx->client, topic, &msg, &options);
+	int ret = MQTTAsync_sendMessage(ctx->client, topic, &msg, &options);
+	if(compressed_len) {
+		free(compressed);
+	}
+	return ret;
 }
 
 #ifdef MQTTVERSION_5
