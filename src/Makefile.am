@@ -122,6 +122,31 @@ janus_SOURCES = \
 	transports/transport.c \
 	events/eventhandler.h \
 	loggers/logger.h \
+	pbc/alloc.c \
+  pbc/context.c \
+	pbc/pattern.c \
+  pbc/rmessage.c \
+	pbc/wmessage.c \
+  pbc/array.c \
+	pbc/decode.c \
+  pbc/proto.c \
+  pbc/stringpool.c \
+  pbc/bootstrap.c \
+  pbc/map.c \
+  pbc/register.c \
+  pbc/varint.c \
+  pbc/alloc.h \
+  pbc/map.h \
+  pbc/proto.h \
+  pbc/array.h \
+  pbc/pattern.h \
+  pbc/stringpool.h \
+  pbc/bootstrap.h \
+  pbc/varint.h \
+  pbc/context.h \
+  pbc/pbc.h \
+  pbc/descriptor.pbc.h \
+  pbc/pbdata.h \
 	$(NULL)
 
 janus_CFLAGS = \
