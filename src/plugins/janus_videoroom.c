@@ -5382,6 +5382,7 @@ static json_t *janus_videoroom_process_synchronous_request(janus_videoroom_sessi
 		json_object_set_new(response, "videoroom", json_string("created"));
 		json_object_set_new(response, "room", string_ids ? json_string(videoroom->room_id_str) : json_integer(videoroom->room_id));
 		json_object_set_new(response, "permanent", save ? json_true() : json_false());
+    json_object_set_new(response, "pb_message", videoroom->pb_message ? json_true() : json_false());
 		/* Also notify event handlers */
 		if(notify_events && gateway->events_is_enabled()) {
 			json_t *info = json_object();
