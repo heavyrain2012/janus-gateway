@@ -660,6 +660,14 @@ static janus_callbacks janus_handler_plugin =
 struct pbc_env* m_env = NULL;
 static int m_supportPb = 0;
 
+void use_pb(void) {
+	m_supportPb = 1;
+}
+
+int is_use_pb(void) {
+	return m_supportPb;
+}
+
 /* Core Sessions */
 static janus_mutex sessions_mutex = JANUS_MUTEX_INITIALIZER;
 static GHashTable *sessions = NULL;
@@ -1073,6 +1081,20 @@ static void janus_request_ice_handle_answer(janus_ice_handle *handle, char *jsep
 	}
 }
 
+static int sendPbJanusSuccess(janus_request *request, guint64 session_id, const char* transaction, guint64 id) {
+	struct pbc_wmessage* ackData = pbc_wmessage_new(m_env, "JanusSuccess");
+	setInt64(ackData, "session_id", session_id);
+	if(id > 0) setInt64(ackData, "id", id);
+	if(transaction != NULL) setString(ackData, "transaction", transaction);
+
+	struct pbc_slice slice;
+	pbc_wmessage_buffer(ackData, &slice);
+	int ret = request->transport->send_message(request->instance, request->request_id, request->admin, NULL, slice.buffer, slice.len, "j_success");
+	pbc_wmessage_delete(ackData);
+	return ret;
+}
+
+
 int janus_process_incoming_request(janus_request *request) {
 	int ret = -1;
 	if(request == NULL) {
@@ -1188,6 +1210,7 @@ int janus_process_incoming_request(janus_request *request) {
 			janus_events_notify_handlers(JANUS_EVENT_TYPE_SESSION, JANUS_EVENT_SUBTYPE_NONE,
 				session_id, "created", transport);
 		}
+		if(!is_use_pb() || request->admin) {
 		/* Prepare JSON reply */
 		json_t *reply = janus_create_message("success", 0, transaction_text);
 		json_t *data = json_object();
@@ -1195,6 +1218,9 @@ int janus_process_incoming_request(janus_request *request) {
 		json_object_set_new(reply, "data", data);
 		/* Send the success reply */
 		ret = janus_process_success(request, reply);
+		} else {
+			ret = sendPbJanusSuccess(request, 0, transaction_text, session_id);
+		}
 		goto jsondone;
 	}
 	if(session_id < 1) {
@@ -1295,6 +1321,7 @@ int janus_process_incoming_request(janus_request *request) {
 			ret = janus_process_error(request, session_id, transaction_text, JANUS_ERROR_PLUGIN_ATTACH, "Couldn't attach to plugin: error '%d'", error);
 			goto jsondone;
 		}
+		if(!is_use_pb() || request->admin) {
 		/* Prepare JSON reply */
 		json_t *reply = janus_create_message("success", session_id, transaction_text);
 		json_t *data = json_object();
@@ -1302,6 +1329,9 @@ int janus_process_incoming_request(janus_request *request) {
 		json_object_set_new(reply, "data", data);
 		/* Send the success reply */
 		ret = janus_process_success(request, reply);
+		} else {
+			ret = sendPbJanusSuccess(request, session_id, transaction_text, handle_id);
+		}
 	} else if(!strcasecmp(message_text, "destroy")) {
 		if(handle != NULL) {
 			/* Query is a session-level command */
@@ -1321,10 +1351,14 @@ int janus_process_incoming_request(janus_request *request) {
 		/* Schedule the session for deletion */
 		janus_session_destroy(session);
 
+		if(!is_use_pb() || request->admin) {
 		/* Prepare JSON reply */
 		json_t *reply = janus_create_message("success", session_id, transaction_text);
 		/* Send the success reply */
 		ret = janus_process_success(request, reply);
+		} else {
+			ret = sendPbJanusSuccess(request, session_id, transaction_text, 0);
+		}
 		/* Notify event handlers as well */
 		if(janus_events_is_enabled())
 			janus_events_notify_handlers(JANUS_EVENT_TYPE_SESSION, JANUS_EVENT_SUBTYPE_NONE,
@@ -1346,10 +1380,14 @@ int janus_process_incoming_request(janus_request *request) {
 			/* TODO Delete handle instance */
 			goto jsondone;
 		}
+		if(!is_use_pb() || request->admin) {
 		/* Prepare JSON reply */
 		json_t *reply = janus_create_message("success", session_id, transaction_text);
 		/* Send the success reply */
 		ret = janus_process_success(request, reply);
+		} else {
+			ret = sendPbJanusSuccess(request, session_id, transaction_text, 0);
+		}
 	} else if(!strcasecmp(message_text, "hangup")) {
 		if(handle == NULL) {
 			/* Query is an handle-level command */
@@ -1361,10 +1399,14 @@ int janus_process_incoming_request(janus_request *request) {
 			goto jsondone;
 		}
 		janus_ice_webrtc_hangup(handle, "Janus API");
+		if(!is_use_pb() || request->admin) {
 		/* Prepare JSON reply */
 		json_t *reply = janus_create_message("success", session_id, transaction_text);
 		/* Send the success reply */
 		ret = janus_process_success(request, reply);
+		} else {
+			ret = sendPbJanusSuccess(request, session_id, transaction_text, 0);
+		}
 	} else if(!strcasecmp(message_text, "claim")) {
 		janus_mutex_lock(&session->mutex);
 		if(session->source != NULL) {
@@ -1884,6 +1926,7 @@ int janus_process_incoming_request(janus_request *request) {
 					janus_flags_clear(&handle->webrtc_flags, JANUS_ICE_HANDLE_WEBRTC_PROCESSING_OFFER);
 				goto jsondone;
 			}
+			if(!is_use_pb() || request->admin) {
 			/* Reference the content, as destroying the result instance will decref it */
 			json_incref(result->content);
 			/* Prepare JSON response */
@@ -1897,6 +1940,24 @@ int janus_process_incoming_request(janus_request *request) {
 			json_object_set_new(reply, "plugindata", plugin_data);
 			/* Send the success reply */
 			ret = janus_process_success(request, reply);
+		} else {
+			struct pbc_wmessage* ackData = pbc_wmessage_new(m_env, "PluginSuccess");
+			setInt64(ackData, "session_id", session->session_id);
+			setInt64(ackData, "sender", handle->handle_id);
+			setString(ackData, "transaction", transaction_text);
+			if(janus_is_opaqueid_in_api_enabled() && handle->opaque_id != NULL)
+				setString(ackData, "opaque_id", handle->opaque_id);
+
+			char *txt = json_dumps(result->content, JSON_INDENT(0) | JSON_PRESERVE_ORDER);
+			setString(ackData, "data", txt);
+			free(txt);
+
+			struct pbc_slice slice;
+			pbc_wmessage_buffer(ackData, &slice);
+			int ret = request->transport->send_message(request->instance, request->request_id, request->admin, NULL, slice.buffer, slice.len, "p_success");
+			pbc_wmessage_delete(ackData);
+			return ret;
+		}
 		} else if(result->type == JANUS_PLUGIN_OK_WAIT) {
 			/* Send the success reply */
 			ret = janus_process_ack(request, session_id, transaction_text, result->text);
@@ -3694,14 +3755,6 @@ janus_plugin *janus_plugin_find(const gchar *package) {
 	if(package != NULL && plugins != NULL)	/* FIXME Do we need to fix the key pointer? */
 		return g_hash_table_lookup(plugins, package);
 	return NULL;
-}
-
-void use_pb(void) {
-	m_supportPb = 1;
-}
-
-int is_use_pb(void) {
-	return m_supportPb;
 }
 
 int janus_plugin_get_handle_and_session_id(janus_plugin_session *plugin_session, guint64 *handleId, guint64 *sessionId) {
