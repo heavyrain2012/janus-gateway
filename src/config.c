@@ -14,7 +14,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <libgen.h>
-
+#include <unistd.h>
 #include <libconfig.h>
 
 #include "config.h"
