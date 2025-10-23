@@ -188,21 +188,13 @@ janus_config *janus_config_parse(const char *config_file) {
 	/* Open file */
 	FILE *file = fopen(config_file, "rt");
 	if(!file) {
-		g_free(tmp_filename);
-
 		if (access(config_file, F_OK) != 0) {
 				JANUS_LOG(LOG_ERR, "  -- Error reading configuration file '%s', file not exist!!!\n", config_file);
-				return NULL;
 		} else {
-				if (access(config_file, R_OK) != 0) {
-						if (errno == EACCES || errno == EPERM) {
-								JANUS_LOG(LOG_ERR, "  -- Error reading configuration file '%s', file not permission to read!!!\n", config_file);
-								return NULL;
-						}
-				}
+				JANUS_LOG(LOG_ERR, "  -- Error reading configuration file '%s', file not permission to read!!!\n", config_file);
 		}
 
-		JANUS_LOG(LOG_ERR, "  -- Error reading configuration file '%s'... error %d (%s)\n", config_file, errno, g_strerror(errno));
+		g_free(tmp_filename);
 		return NULL;
 	}
 	/* Create configuration instance */
