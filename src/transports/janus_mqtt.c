@@ -2086,31 +2086,31 @@ int getNodeHost(const char* host, int port, const char* client, char* content) {
     JANUS_LOG(LOG_INFO, "Connect to im server %s, %s\n", host, client);
     request_len = snprintf(request, MAX_REQUEST_LEN, "GET /api/node?id=%s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", client, host);
     if (request_len >= MAX_REQUEST_LEN) {
-        fprintf(stderr, "request length large: %d\n", request_len);
+        JANUS_LOG(LOG_ERR, "Request length large: %d\n", request_len);
         return -1;
     }
 
     /* Build the socket. */
     protoent = getprotobyname("tcp");
     if (protoent == NULL) {
-        perror("getprotobyname");
+        JANUS_LOG(LOG_ERR, "getprotobyname failed!");
         return -1;
     }
     socket_file_descriptor = socket(AF_INET, SOCK_STREAM, protoent->p_proto);
     if (socket_file_descriptor == -1) {
-        perror("socket");
+        JANUS_LOG(LOG_ERR, "open socket failed!");
         return -1;
     }
 
     /* Build the address. */
     hostent = gethostbyname(host);
     if (hostent == NULL) {
-        fprintf(stderr, "error: gethostbyname(\"%s\")\n", host);
+        JANUS_LOG(LOG_ERR, "error: gethostbyname(\"%s\")\n", host);
         return -1;
     }
     in_addr = inet_addr(inet_ntoa(*(struct in_addr*)*(hostent->h_addr_list)));
     if (in_addr == (in_addr_t)-1) {
-        fprintf(stderr, "error: inet_addr(\"%s\")\n", *(hostent->h_addr_list));
+        JANUS_LOG(LOG_ERR, "error: inet_addr(\"%s\")\n", *(hostent->h_addr_list));
         return -1;
     }
     sockaddr_in.sin_addr.s_addr = in_addr;
@@ -2125,7 +2125,7 @@ int getNodeHost(const char* host, int port, const char* client, char* content) {
 
     /* Actually connect. */
     if (connect(socket_file_descriptor, (struct sockaddr*)&sockaddr_in, sizeof(sockaddr_in)) == -1) {
-        perror("connect");
+        JANUS_LOG(LOG_ERR, "connect to server (%s) error\n", host);
         return -1;
     }
 
@@ -2134,7 +2134,7 @@ int getNodeHost(const char* host, int port, const char* client, char* content) {
     while (nbytes_total < request_len) {
         nbytes_last = write(socket_file_descriptor, request + nbytes_total, request_len - nbytes_total);
         if (nbytes_last == -1) {
-            perror("write");
+            JANUS_LOG(LOG_ERR, "write error!");
             return -1;
         }
         nbytes_total += nbytes_last;
