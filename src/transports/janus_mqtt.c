@@ -549,36 +549,36 @@ int janus_mqtt_init(janus_transport_callbacks *callback, const char *config_path
 
 		/* Subscribe configuration */
 		{
-			janus_config_item *topic_item = janus_config_get(config, config_general, janus_config_type_item, "subscribe_topic");
-			if(!topic_item || !topic_item->value) {
-				JANUS_LOG(LOG_FATAL, "Missing topic for incoming messages for MQTT integration...\n");
-				goto error;
-			}
-			ctx->subscribe.topic = g_strdup(topic_item->value);
+			// janus_config_item *topic_item = janus_config_get(config, config_general, janus_config_type_item, "subscribe_topic");
+			// if(!topic_item || !topic_item->value) {
+			// 	JANUS_LOG(LOG_FATAL, "Missing topic for incoming messages for MQTT integration...\n");
+			// 	goto error;
+			// }
+			ctx->subscribe.topic = g_strdup("to-janus");
 
-			janus_config_item *qos_item = janus_config_get(config, config_general, janus_config_type_item, "subscribe_qos");
-			ctx->subscribe.qos = (qos_item && qos_item->value) ? atoi(qos_item->value) : 1;
-			if(ctx->subscribe.qos < 0) {
-				JANUS_LOG(LOG_ERR, "Invalid subscribe-qos value: %s (falling back to default)\n", qos_item->value);
-				ctx->subscribe.qos = 1;
-			}
+			// janus_config_item *qos_item = janus_config_get(config, config_general, janus_config_type_item, "subscribe_qos");
+			ctx->subscribe.qos = 0;//(qos_item && qos_item->value) ? atoi(qos_item->value) : 1;
+			// if(ctx->subscribe.qos < 0) {
+			// 	JANUS_LOG(LOG_ERR, "Invalid subscribe-qos value: %s (falling back to default)\n", qos_item->value);
+			// 	ctx->subscribe.qos = 1;
+			// }
 		}
 
 		/* Publish configuration */
 		{
-			janus_config_item *topic_item = janus_config_get(config, config_general, janus_config_type_item, "publish_topic");
-			if(!topic_item || !topic_item->value) {
-				JANUS_LOG(LOG_FATAL, "Missing topic for outgoing messages for MQTT integration...\n");
-				goto error;
-			}
-			ctx->publish.topic = g_strdup(topic_item->value);
+			// janus_config_item *topic_item = janus_config_get(config, config_general, janus_config_type_item, "publish_topic");
+			// if(!topic_item || !topic_item->value) {
+			// 	JANUS_LOG(LOG_FATAL, "Missing topic for outgoing messages for MQTT integration...\n");
+			// 	goto error;
+			// }
+			ctx->publish.topic = g_strdup("from-janus");
 
-			janus_config_item *qos_item = janus_config_get(config, config_general, janus_config_type_item, "publish_qos");
-			ctx->publish.qos = (qos_item && qos_item->value) ? atoi(qos_item->value) : 1;
-			if(ctx->publish.qos < 0) {
-				JANUS_LOG(LOG_ERR, "Invalid publish-qos value: %s (falling back to default)\n", qos_item->value);
-				ctx->publish.qos = 1;
-			}
+			// janus_config_item *qos_item = janus_config_get(config, config_general, janus_config_type_item, "publish_qos");
+			ctx->publish.qos = 0;//(qos_item && qos_item->value) ? atoi(qos_item->value) : 1;
+			// if(ctx->publish.qos < 0) {
+			// 	JANUS_LOG(LOG_ERR, "Invalid publish-qos value: %s (falling back to default)\n", qos_item->value);
+			// 	ctx->publish.qos = 1;
+			// }
 
 #ifdef MQTTVERSION_5
 			if (ctx->connect.mqtt_version == MQTTVERSION_5) {
