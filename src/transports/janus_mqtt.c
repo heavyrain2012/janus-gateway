@@ -1785,7 +1785,7 @@ int janus_mqtt_client_publish_message(janus_mqtt_context *ctx, char *payload, gb
 		topic = pbTopic;
 	}
 
-	if(msg.payloadlen > 1024) {
+	if(!payload && msg.payloadlen > 1024) {
 		int ret = gzip_compress((unsigned char *)msg.payload, msg.payloadlen,
 												&compressed, &compressed_len, Z_DEFAULT_COMPRESSION);
 		if (ret == Z_OK) {
