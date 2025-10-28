@@ -1773,7 +1773,6 @@ void janus_mqtt_client_admin_subscribe_failure_impl(void *context, int rc) {
 int janus_mqtt_client_publish_message(janus_mqtt_context *ctx, char *payload, gboolean admin, const unsigned char *pbData, size_t pbLength, const char *pbTopic) {
 	MQTTAsync_message msg = MQTTAsync_message_initializer;
 	char *topic = admin ? ctx->admin.publish.topic : ctx->publish.topic;
-	char result[48];
 	unsigned char *compressed = NULL;
 	size_t compressed_len = 0;
 
@@ -1791,6 +1790,8 @@ int janus_mqtt_client_publish_message(janus_mqtt_context *ctx, char *payload, gb
 												&compressed, &compressed_len, Z_DEFAULT_COMPRESSION);
 		if (ret == Z_OK) {
 			const char *prefix = "zip";
+			char result[48];
+			memset(result, 0, 48);
 			strcpy(result, prefix);
 			strcat(result, pbTopic);
 			topic = result;
