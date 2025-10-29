@@ -1775,7 +1775,7 @@ int janus_mqtt_client_publish_message(janus_mqtt_context *ctx, char *payload, gb
 	char *topic = admin ? ctx->admin.publish.topic : ctx->publish.topic;
 	unsigned char *compressed = NULL;
 	size_t compressed_len = 0;
-
+	char result[48];
 	if(payload) {
 		msg.payload = payload;
 		msg.payloadlen = strlen(payload);
@@ -1790,7 +1790,6 @@ int janus_mqtt_client_publish_message(janus_mqtt_context *ctx, char *payload, gb
 												&compressed, &compressed_len, Z_DEFAULT_COMPRESSION);
 		if (ret == Z_OK) {
 			const char *prefix = "zip";
-			char result[48];
 			memset(result, 0, 48);
 			strcpy(result, prefix);
 			strcat(result, pbTopic);
