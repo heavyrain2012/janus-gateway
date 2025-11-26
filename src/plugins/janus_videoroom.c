@@ -5747,6 +5747,7 @@ static json_t *janus_videoroom_process_synchronous_request(janus_videoroom_sessi
           json_object_set_new(rl, "rm", string_ids ? json_string(room->room_id_str) : json_integer(room->room_id));
           json_object_set_new(rl, "des", json_string(room->room_name));
           json_object_set_new(rl, "pin", room->room_pin ? json_true() : json_false());
+          json_object_set_new(rl, "pri", room->is_private ? json_true() : json_false());
           json_object_set_new(rl, "mp", json_integer(room->max_publishers));
           json_object_set_new(rl, "rd", room->record ? json_true() : json_false());
           json_object_set_new(rl, "np", json_integer(g_hash_table_size(room->participants)));
@@ -5754,6 +5755,7 @@ static json_t *janus_videoroom_process_synchronous_request(janus_videoroom_sessi
           json_object_set_new(rl, "room", string_ids ? json_string(room->room_id_str) : json_integer(room->room_id));
           json_object_set_new(rl, "description", json_string(room->room_name));
           json_object_set_new(rl, "pin_required", room->room_pin ? json_true() : json_false());
+          json_object_set_new(rl, "is_private", room->is_private ? json_true() : json_false());
           json_object_set_new(rl, "max_publishers", json_integer(room->max_publishers));
           json_object_set_new(rl, "record", room->record ? json_true() : json_false());
           json_object_set_new(rl, "num_participants", json_integer(g_hash_table_size(room->participants)));
