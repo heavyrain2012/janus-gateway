@@ -4807,6 +4807,7 @@ static int janus_videoroom_access_room(json_t *root, gboolean check_modify, gboo
 }
 
 extern void use_pb(void);
+extern int is_use_pb(void);
 /* Helper method to process synchronous requests */
 static json_t *janus_videoroom_process_synchronous_request(janus_videoroom_session *session, json_t *message) {
 	json_t *request = json_object_get(message, "request");
@@ -5705,42 +5706,58 @@ static json_t *janus_videoroom_process_synchronous_request(janus_videoroom_sessi
 			}
 			if(!g_atomic_int_get(&room->destroyed)) {
 				json_t *rl = json_object();
-				json_object_set_new(rl, "room", string_ids ? json_string(room->room_id_str) : json_integer(room->room_id));
-				json_object_set_new(rl, "description", json_string(room->room_name));
-				json_object_set_new(rl, "pin_required", room->room_pin ? json_true() : json_false());
-				json_object_set_new(rl, "is_private", room->is_private ? json_true() : json_false());
-				json_object_set_new(rl, "max_publishers", json_integer(room->max_publishers));
-				json_object_set_new(rl, "bitrate", json_integer(room->bitrate));
-				if(room->bitrate_cap)
-					json_object_set_new(rl, "bitrate_cap", json_true());
-				json_object_set_new(rl, "fir_freq", json_integer(room->fir_freq));
-				json_object_set_new(rl, "require_pvtid", room->require_pvtid ? json_true() : json_false());
-				json_object_set_new(rl, "require_e2ee", room->require_e2ee ? json_true() : json_false());
-				json_object_set_new(rl, "dummy_publisher", room->dummy_publisher ? json_true() : json_false());
-				json_object_set_new(rl, "notify_joining", room->notify_joining ? json_true() : json_false());
-				json_object_set_new(rl, "pb_message", room->pb_message ? json_true() : json_false());
-				char audio_codecs[100];
-				char video_codecs[100];
-				janus_videoroom_codecstr(room, audio_codecs, video_codecs, sizeof(audio_codecs), ",");
-				json_object_set_new(rl, "audiocodec", json_string(audio_codecs));
-				json_object_set_new(rl, "videocodec", json_string(video_codecs));
-				if(room->do_opusfec)
-					json_object_set_new(rl, "opus_fec", json_true());
-				if(room->do_opusdtx)
-					json_object_set_new(rl, "opus_dtx", json_true());
-				json_object_set_new(rl, "record", room->record ? json_true() : json_false());
-				json_object_set_new(rl, "rec_dir", json_string(room->rec_dir));
-				json_object_set_new(rl, "lock_record", room->lock_record ? json_true() : json_false());
-				json_object_set_new(rl, "num_participants", json_integer(g_hash_table_size(room->participants)));
-				json_object_set_new(rl, "audiolevel_ext", room->audiolevel_ext ? json_true() : json_false());
-				json_object_set_new(rl, "audiolevel_event", room->audiolevel_event ? json_true() : json_false());
-				if(room->audiolevel_event) {
-					json_object_set_new(rl, "audio_active_packets", json_integer(room->audio_active_packets));
-					json_object_set_new(rl, "audio_level_average", json_integer(room->audio_level_average));
-				}
-				json_object_set_new(rl, "videoorient_ext", room->videoorient_ext ? json_true() : json_false());
-				json_object_set_new(rl, "playoutdelay_ext", room->playoutdelay_ext ? json_true() : json_false());
-				json_object_set_new(rl, "transport_wide_cc_ext", room->transport_wide_cc_ext ? json_true() : json_false());
+				// json_object_set_new(rl, "room", string_ids ? json_string(room->room_id_str) : json_integer(room->room_id));
+				// json_object_set_new(rl, "description", json_string(room->room_name));
+				// json_object_set_new(rl, "pin_required", room->room_pin ? json_true() : json_false());
+				// json_object_set_new(rl, "is_private", room->is_private ? json_true() : json_false());
+				// json_object_set_new(rl, "max_publishers", json_integer(room->max_publishers));
+				// json_object_set_new(rl, "bitrate", json_integer(room->bitrate));
+				// if(room->bitrate_cap)
+				// 	json_object_set_new(rl, "bitrate_cap", json_true());
+				// json_object_set_new(rl, "fir_freq", json_integer(room->fir_freq));
+				// json_object_set_new(rl, "require_pvtid", room->require_pvtid ? json_true() : json_false());
+				// json_object_set_new(rl, "require_e2ee", room->require_e2ee ? json_true() : json_false());
+				// json_object_set_new(rl, "dummy_publisher", room->dummy_publisher ? json_true() : json_false());
+				// json_object_set_new(rl, "notify_joining", room->notify_joining ? json_true() : json_false());
+				// json_object_set_new(rl, "pb_message", room->pb_message ? json_true() : json_false());
+				// char audio_codecs[100];
+				// char video_codecs[100];
+				// janus_videoroom_codecstr(room, audio_codecs, video_codecs, sizeof(audio_codecs), ",");
+				// json_object_set_new(rl, "audiocodec", json_string(audio_codecs));
+				// json_object_set_new(rl, "videocodec", json_string(video_codecs));
+				// if(room->do_opusfec)
+				// 	json_object_set_new(rl, "opus_fec", json_true());
+				// if(room->do_opusdtx)
+				// 	json_object_set_new(rl, "opus_dtx", json_true());
+				// json_object_set_new(rl, "record", room->record ? json_true() : json_false());
+				// json_object_set_new(rl, "rec_dir", json_string(room->rec_dir));
+				// json_object_set_new(rl, "lock_record", room->lock_record ? json_true() : json_false());
+				// json_object_set_new(rl, "num_participants", json_integer(g_hash_table_size(room->participants)));
+				// json_object_set_new(rl, "audiolevel_ext", room->audiolevel_ext ? json_true() : json_false());
+				// json_object_set_new(rl, "audiolevel_event", room->audiolevel_event ? json_true() : json_false());
+				// if(room->audiolevel_event) {
+				// 	json_object_set_new(rl, "audio_active_packets", json_integer(room->audio_active_packets));
+				// 	json_object_set_new(rl, "audio_level_average", json_integer(room->audio_level_average));
+				// }
+				// json_object_set_new(rl, "videoorient_ext", room->videoorient_ext ? json_true() : json_false());
+				// json_object_set_new(rl, "playoutdelay_ext", room->playoutdelay_ext ? json_true() : json_false());
+				// json_object_set_new(rl, "transport_wide_cc_ext", room->transport_wide_cc_ext ? json_true() : json_false());
+
+        if(is_use_pb()) {
+          json_object_set_new(rl, "rm", string_ids ? json_string(room->room_id_str) : json_integer(room->room_id));
+          json_object_set_new(rl, "des", json_string(room->room_name));
+          json_object_set_new(rl, "pin", room->room_pin ? json_true() : json_false());
+          json_object_set_new(rl, "mp", json_integer(room->max_publishers));
+          json_object_set_new(rl, "rd", room->record ? json_true() : json_false());
+          json_object_set_new(rl, "np", json_integer(g_hash_table_size(room->participants)));
+        } else {
+          json_object_set_new(rl, "room", string_ids ? json_string(room->room_id_str) : json_integer(room->room_id));
+          json_object_set_new(rl, "description", json_string(room->room_name));
+          json_object_set_new(rl, "pin_required", room->room_pin ? json_true() : json_false());
+          json_object_set_new(rl, "max_publishers", json_integer(room->max_publishers));
+          json_object_set_new(rl, "record", room->record ? json_true() : json_false());
+          json_object_set_new(rl, "num_participants", json_integer(g_hash_table_size(room->participants)));
+        }
 				json_array_append_new(list, rl);
 			}
 			janus_refcount_decrease(&room->ref);
