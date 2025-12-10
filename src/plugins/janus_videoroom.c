@@ -4553,9 +4553,22 @@ static void janus_videoroom_leave_or_unpublish(janus_videoroom_publisher *partic
 		g_hash_table_remove(participant->room->participants,
 			string_ids ? (gpointer)participant->user_id_str : (gpointer)&participant->user_id);
 		g_hash_table_remove(participant->room->private_ids, GUINT_TO_POINTER(participant->pvt_id));
+
+		janus_videoroom *videoroom = NULL;
+		if(g_hash_table_size(participant->room->participants) == 0) {
+			videoroom = participant->room;
+			janus_refcount_increase(&videoroom->ref);
+		}
+
 		janus_mutex_lock(&participant->mutex);
 		g_clear_pointer(&participant->room, janus_videoroom_room_dereference);
 		janus_mutex_unlock(&participant->mutex);
+
+		if(videoroom) {
+			JANUS_LOG(LOG_INFO, "VideoRoom no any participants, remove it...\n");
+			g_hash_table_remove(rooms, string_ids ? (gpointer)videoroom->room_id_str : (gpointer)&videoroom->room_id);
+			janus_refcount_decrease(&videoroom->ref);
+		}
 	}
 	janus_mutex_unlock(&room->mutex);
 	janus_refcount_decrease(&room->ref);
