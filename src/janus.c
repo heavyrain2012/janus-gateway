@@ -31,6 +31,14 @@
 #include <curl/curl.h>
 #endif
 
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <signal.h>
+#include <execinfo.h>
+#include <unistd.h>
+
+
 #include "janus.h"
 #include "version.h"
 #include "options.h"
@@ -43,6 +51,7 @@
 #include "auth.h"
 #include "record.h"
 #include "events.h"
+#include "pbc/pbc.h"
 
 
 #define JANUS_NAME				"Janus WebRTC Server"
@@ -94,7 +103,8 @@ static char *api_secret = NULL, *admin_api_secret = NULL;
 
 /* JSON parameters */
 static int janus_process_error_string(janus_request *request, uint64_t session_id, const char *transaction, gint error, gchar *error_string);
-
+int setInt64(struct pbc_wmessage *msg, const char *key, int64_t value);
+int setString(struct pbc_wmessage *msg, const char *key, const char *value);
 static struct janus_json_parameter incoming_request_parameters[] = {
 	{"transaction", JSON_STRING, JANUS_JSON_PARAM_REQUIRED},
 	{"janus", JSON_STRING, JANUS_JSON_PARAM_REQUIRED},
@@ -647,6 +657,17 @@ static janus_callbacks janus_handler_plugin =
 ///@}
 
 
+struct pbc_env* m_env = NULL;
+static int m_supportPb = 0;
+
+void use_pb(void) {
+	m_supportPb = 1;
+}
+
+int is_use_pb(void) {
+	return m_supportPb;
+}
+
 /* Core Sessions */
 static janus_mutex sessions_mutex = JANUS_MUTEX_INITIALIZER;
 static GHashTable *sessions = NULL;
@@ -720,7 +741,7 @@ static gboolean janus_check_sessions(gpointer user_data) {
 					if(source) {
 						json_t *event = janus_create_message("timeout", session->session_id, NULL);
 						/* Send this to the transport client and notify the session's over */
-						source->transport->send_message(source->instance, NULL, FALSE, event);
+						source->transport->send_message(source->instance, NULL, FALSE, event, NULL, 0, NULL);
 						source->transport->session_over(source->instance, session->session_id, TRUE, FALSE);
 					}
 					janus_request_unref(source);
@@ -818,21 +839,25 @@ janus_session *janus_session_find(guint64 session_id) {
 	return session;
 }
 
-void janus_session_notify_event(janus_session *session, json_t *event) {
+void janus_session_notify_event(janus_session *session, json_t *event, const unsigned char* pbData, size_t pbLength, const char* topic) {
 	if(session != NULL && !g_atomic_int_get(&session->destroyed)) {
 		janus_request *source = janus_session_get_request(session);
 		if(source != NULL && source->transport != NULL) {
 			/* Send this to the transport client */
 			JANUS_LOG(LOG_HUGE, "Sending event to %s (%p)\n", source->transport->get_package(), source->instance);
-			source->transport->send_message(source->instance, NULL, FALSE, event);
+			if(event) {
+				source->transport->send_message(source->instance, NULL, FALSE, event, NULL, 0, NULL);
+			} else {
+				source->transport->send_message(source->instance, NULL, FALSE, NULL, pbData, pbLength, topic);
+			}
 		} else {
 			/* No transport, free the event */
-			json_decref(event);
+			if(event) json_decref(event);
 		}
 		janus_request_unref(source);
 	} else {
 		/* No session, free the event */
-		json_decref(event);
+		if(event) json_decref(event);
 	}
 }
 
@@ -1056,6 +1081,20 @@ static void janus_request_ice_handle_answer(janus_ice_handle *handle, char *jsep
 	}
 }
 
+static int sendPbJanusSuccess(janus_request *request, guint64 session_id, const char* transaction, guint64 id) {
+	struct pbc_wmessage* ackData = pbc_wmessage_new(m_env, "JanusSuccess");
+	setInt64(ackData, "session_id", session_id);
+	if(id > 0) setInt64(ackData, "id", id);
+	if(transaction != NULL) setString(ackData, "transaction", transaction);
+
+	struct pbc_slice slice;
+	pbc_wmessage_buffer(ackData, &slice);
+	int ret = request->transport->send_message(request->instance, request->request_id, request->admin, NULL, slice.buffer, slice.len, "j_success");
+	pbc_wmessage_delete(ackData);
+	return ret;
+}
+
+
 int janus_process_incoming_request(janus_request *request) {
 	int ret = -1;
 	if(request == NULL) {
@@ -1171,6 +1210,7 @@ int janus_process_incoming_request(janus_request *request) {
 			janus_events_notify_handlers(JANUS_EVENT_TYPE_SESSION, JANUS_EVENT_SUBTYPE_NONE,
 				session_id, "created", transport);
 		}
+		if(!is_use_pb() || request->admin) {
 		/* Prepare JSON reply */
 		json_t *reply = janus_create_message("success", 0, transaction_text);
 		json_t *data = json_object();
@@ -1178,6 +1218,9 @@ int janus_process_incoming_request(janus_request *request) {
 		json_object_set_new(reply, "data", data);
 		/* Send the success reply */
 		ret = janus_process_success(request, reply);
+		} else {
+			ret = sendPbJanusSuccess(request, 0, transaction_text, session_id);
+		}
 		goto jsondone;
 	}
 	if(session_id < 1) {
@@ -1221,9 +1264,8 @@ int janus_process_incoming_request(janus_request *request) {
 	if(!strcasecmp(message_text, "keepalive")) {
 		/* Just a keep-alive message, reply with an ack */
 		JANUS_LOG(LOG_VERB, "Got a keep-alive on session %"SCNu64"\n", session_id);
-		json_t *reply = janus_create_message("ack", session_id, transaction_text);
-		/* Send the success reply */
-		ret = janus_process_success(request, reply);
+		/* Send the ack reply */
+		ret = janus_process_ack(request, session_id, transaction_text, NULL);
 	} else if(!strcasecmp(message_text, "attach")) {
 		if(handle != NULL) {
 			/* Attach is a session-level command */
@@ -1279,6 +1321,7 @@ int janus_process_incoming_request(janus_request *request) {
 			ret = janus_process_error(request, session_id, transaction_text, JANUS_ERROR_PLUGIN_ATTACH, "Couldn't attach to plugin: error '%d'", error);
 			goto jsondone;
 		}
+		if(!is_use_pb() || request->admin) {
 		/* Prepare JSON reply */
 		json_t *reply = janus_create_message("success", session_id, transaction_text);
 		json_t *data = json_object();
@@ -1286,6 +1329,9 @@ int janus_process_incoming_request(janus_request *request) {
 		json_object_set_new(reply, "data", data);
 		/* Send the success reply */
 		ret = janus_process_success(request, reply);
+		} else {
+			ret = sendPbJanusSuccess(request, session_id, transaction_text, handle_id);
+		}
 	} else if(!strcasecmp(message_text, "destroy")) {
 		if(handle != NULL) {
 			/* Query is a session-level command */
@@ -1305,10 +1351,14 @@ int janus_process_incoming_request(janus_request *request) {
 		/* Schedule the session for deletion */
 		janus_session_destroy(session);
 
+		if(!is_use_pb() || request->admin) {
 		/* Prepare JSON reply */
 		json_t *reply = janus_create_message("success", session_id, transaction_text);
 		/* Send the success reply */
 		ret = janus_process_success(request, reply);
+		} else {
+			ret = sendPbJanusSuccess(request, session_id, transaction_text, 0);
+		}
 		/* Notify event handlers as well */
 		if(janus_events_is_enabled())
 			janus_events_notify_handlers(JANUS_EVENT_TYPE_SESSION, JANUS_EVENT_SUBTYPE_NONE,
@@ -1330,10 +1380,14 @@ int janus_process_incoming_request(janus_request *request) {
 			/* TODO Delete handle instance */
 			goto jsondone;
 		}
+		if(!is_use_pb() || request->admin) {
 		/* Prepare JSON reply */
 		json_t *reply = janus_create_message("success", session_id, transaction_text);
 		/* Send the success reply */
 		ret = janus_process_success(request, reply);
+		} else {
+			ret = sendPbJanusSuccess(request, session_id, transaction_text, 0);
+		}
 	} else if(!strcasecmp(message_text, "hangup")) {
 		if(handle == NULL) {
 			/* Query is an handle-level command */
@@ -1345,10 +1399,14 @@ int janus_process_incoming_request(janus_request *request) {
 			goto jsondone;
 		}
 		janus_ice_webrtc_hangup(handle, "Janus API");
+		if(!is_use_pb() || request->admin) {
 		/* Prepare JSON reply */
 		json_t *reply = janus_create_message("success", session_id, transaction_text);
 		/* Send the success reply */
 		ret = janus_process_success(request, reply);
+		} else {
+			ret = sendPbJanusSuccess(request, session_id, transaction_text, 0);
+		}
 	} else if(!strcasecmp(message_text, "claim")) {
 		janus_mutex_lock(&session->mutex);
 		if(session->source != NULL) {
@@ -1868,6 +1926,7 @@ int janus_process_incoming_request(janus_request *request) {
 					janus_flags_clear(&handle->webrtc_flags, JANUS_ICE_HANDLE_WEBRTC_PROCESSING_OFFER);
 				goto jsondone;
 			}
+			if(!is_use_pb() || request->admin) {
 			/* Reference the content, as destroying the result instance will decref it */
 			json_incref(result->content);
 			/* Prepare JSON response */
@@ -1881,13 +1940,27 @@ int janus_process_incoming_request(janus_request *request) {
 			json_object_set_new(reply, "plugindata", plugin_data);
 			/* Send the success reply */
 			ret = janus_process_success(request, reply);
+		} else {
+			struct pbc_wmessage* ackData = pbc_wmessage_new(m_env, "PluginSuccess");
+			setInt64(ackData, "session_id", session->session_id);
+			setInt64(ackData, "sender", handle->handle_id);
+			setString(ackData, "transaction", transaction_text);
+			if(janus_is_opaqueid_in_api_enabled() && handle->opaque_id != NULL)
+				setString(ackData, "opaque_id", handle->opaque_id);
+
+			char *txt = json_dumps(result->content, JSON_INDENT(0) | JSON_PRESERVE_ORDER);
+			setString(ackData, "data", txt);
+			free(txt);
+
+			struct pbc_slice slice;
+			pbc_wmessage_buffer(ackData, &slice);
+			int ret = request->transport->send_message(request->instance, request->request_id, request->admin, NULL, slice.buffer, slice.len, "p_success");
+			pbc_wmessage_delete(ackData);
+			return ret;
+		}
 		} else if(result->type == JANUS_PLUGIN_OK_WAIT) {
-			/* The plugin received the request but didn't process it yet, send an ack (asynchronous notifications may follow) */
-			json_t *reply = janus_create_message("ack", session_id, transaction_text);
-			if(result->text)
-				json_object_set_new(reply, "hint", json_string(result->text));
 			/* Send the success reply */
-			ret = janus_process_success(request, reply);
+			ret = janus_process_ack(request, session_id, transaction_text, result->text);
 		} else {
 			/* Something went horribly wrong! */
 			ret = janus_process_error_string(request, session_id, transaction_text, JANUS_ERROR_PLUGIN_MESSAGE,
@@ -1986,9 +2059,7 @@ int janus_process_incoming_request(janus_request *request) {
 trickledone:
 		janus_mutex_unlock(&handle->mutex);
 		/* We reply right away, not to block the web server... */
-		json_t *reply = janus_create_message("ack", session_id, transaction_text);
-		/* Send the success reply */
-		ret = janus_process_success(request, reply);
+		ret = janus_process_ack(request, session_id, transaction_text, NULL);
 	} else {
 		ret = janus_process_error(request, session_id, transaction_text, JANUS_ERROR_UNKNOWN_REQUEST, "Unknown request '%s'", message_text);
 	}
@@ -3134,13 +3205,38 @@ jsondone:
 	return ret;
 }
 
+int janus_process_ack(janus_request *request, guint64 session_id, const gchar *transaction_text, const gchar* hinttext) {
+	if(!request)
+		return -1;
+
+	JANUS_LOG(LOG_HUGE, "Sending %s API response to %s (%p)\n", request->admin ? "admin" : "Janus", request->transport->get_package(), request->instance);
+	if(!m_supportPb) {
+		json_t *reply = janus_create_message("ack", session_id, transaction_text);
+		if(hinttext)
+			json_object_set_new(reply, "hint", hinttext);
+		return request->transport->send_message(request->instance, request->request_id, request->admin, reply, NULL, 0, NULL);
+	} else {
+		struct pbc_wmessage* ackData = pbc_wmessage_new(m_env, "Ack");
+		setString(ackData, "transaction", (const char *)transaction_text);
+		setInt64(ackData, "session_id", session_id);
+		if(hinttext) {
+			setString(ackData, "hint", hinttext);
+		}
+		struct pbc_slice slice;
+		pbc_wmessage_buffer(ackData, &slice);
+		int ret = request->transport->send_message(request->instance, request->request_id, request->admin, NULL, slice.buffer, slice.len, "ack");
+		pbc_wmessage_delete(ackData);
+		return ret;
+	}
+}
+
 int janus_process_success(janus_request *request, json_t *payload)
 {
 	if(!request || !payload)
 		return -1;
 	/* Pass to the right transport plugin */
 	JANUS_LOG(LOG_HUGE, "Sending %s API response to %s (%p)\n", request->admin ? "admin" : "Janus", request->transport->get_package(), request->instance);
-	return request->transport->send_message(request->instance, request->request_id, request->admin, payload);
+	return request->transport->send_message(request->instance, request->request_id, request->admin, payload, NULL, 0, NULL);
 }
 
 static int janus_process_error_string(janus_request *request, uint64_t session_id, const char *transaction, gint error, gchar *error_string)
@@ -3156,7 +3252,7 @@ static int janus_process_error_string(janus_request *request, uint64_t session_i
 	json_object_set_new(error_data, "reason", json_string(error_string));
 	json_object_set_new(reply, "error", error_data);
 	/* Pass to the right transport plugin */
-	return request->transport->send_message(request->instance, request->request_id, request->admin, reply);
+	return request->transport->send_message(request->instance, request->request_id, request->admin, reply, NULL, 0, NULL);
 }
 
 int janus_process_error(janus_request *request, uint64_t session_id, const char *transaction, gint error, const char *format, ...)
@@ -3661,6 +3757,54 @@ janus_plugin *janus_plugin_find(const gchar *package) {
 	return NULL;
 }
 
+int janus_plugin_get_handle_and_session_id(janus_plugin_session *plugin_session, guint64 *handleId, guint64 *sessionId) {
+	if(!janus_plugin_session_is_alive(plugin_session))
+		return -1;
+	janus_refcount_increase(&plugin_session->ref);
+	janus_ice_handle *ice_handle = (janus_ice_handle *)plugin_session->gateway_handle;
+	if(!ice_handle || janus_flags_is_set(&ice_handle->webrtc_flags, JANUS_ICE_HANDLE_WEBRTC_STOP)) {
+		janus_refcount_decrease(&plugin_session->ref);
+		return -1;
+	}
+	janus_refcount_increase(&ice_handle->ref);
+	janus_session *session = ice_handle->session;
+	if(!session || g_atomic_int_get(&session->destroyed)) {
+		janus_refcount_decrease(&plugin_session->ref);
+		janus_refcount_decrease(&ice_handle->ref);
+		return -1;
+	}
+
+	*handleId = ice_handle->handle_id;
+	*sessionId = session->session_id;
+	janus_refcount_decrease(&plugin_session->ref);
+	janus_refcount_decrease(&ice_handle->ref);
+	return 0;
+}
+
+int setInt(struct pbc_wmessage *msg, const char *key, int value) {
+		unsigned int low = abs(value);
+		unsigned int hi = 0;
+		if (value < 0) {
+				hi = -1;
+		}
+		return pbc_wmessage_integer(msg, key, low, hi);
+}
+
+int setInt64(struct pbc_wmessage *msg, const char *key, int64_t value) {
+		unsigned int hi = value >> 32;
+		int64_t hi64 = hi;
+		unsigned int low = (unsigned int)(value - (hi64 << 32));
+
+		return pbc_wmessage_integer(msg, key, low, hi);
+}
+
+int setString(struct pbc_wmessage *msg, const char *key, const char *value) {
+		return pbc_wmessage_string(msg, key, value, (int)strlen(value));
+}
+
+struct pbc_wmessage* setSubMessaage(struct pbc_wmessage *msg, const char *key) {
+		return pbc_wmessage_message(msg, key);
+}
 
 /* Plugin callback interface */
 int janus_plugin_push_event(janus_plugin_session *plugin_session, janus_plugin *plugin, const char *transaction, json_t *message, json_t *jsep) {
@@ -3722,24 +3866,64 @@ int janus_plugin_push_event(janus_plugin_session *plugin_session, janus_plugin *
 	json_object_set_new(plugin_data, "plugin", json_string(plugin->get_package()));
 	json_object_set_new(plugin_data, "data", message);
 	json_object_set_new(event, "plugindata", plugin_data);
+
+	struct pbc_wmessage* JanusPluginData = NULL;
+	struct pbc_wmessage* PluginData = NULL;
+
+	if(m_supportPb) {
+		JanusPluginData = pbc_wmessage_new(m_env, "JanusPluginData");
+		PluginData = setSubMessaage(JanusPluginData, "plugin_data");
+	}
+
 	if(merged_jsep != NULL) {
 		if(e2ee)
 			janus_flags_set(&ice_handle->webrtc_flags, JANUS_ICE_HANDLE_WEBRTC_E2EE);
 		if(janus_flags_is_set(&ice_handle->webrtc_flags, JANUS_ICE_HANDLE_WEBRTC_E2EE))
 			json_object_set_new(merged_jsep, "e2ee", json_true());
 		json_object_set_new(event, "jsep", merged_jsep);
+
+		const char *merged_sdp_type = json_string_value(json_object_get(merged_jsep, "type"));
+		const char *merged_sdp = json_string_value(json_object_get(merged_jsep, "sdp"));
+
+		if(m_supportPb) {
+			struct pbc_wmessage* pbJsep = setSubMessaage(JanusPluginData, "jsep");
+			setString(pbJsep, "type", merged_sdp_type);
+			setString(pbJsep, "sdp", merged_sdp);
+		}
+
 		/* In case event handlers are enabled, push the local SDP to all handlers */
 		if(janus_events_is_enabled()) {
-			const char *merged_sdp_type = json_string_value(json_object_get(merged_jsep, "type"));
-			const char *merged_sdp = json_string_value(json_object_get(merged_jsep, "sdp"));
 			/* Notify event handlers as well */
 			janus_events_notify_handlers(JANUS_EVENT_TYPE_JSEP, JANUS_EVENT_SUBTYPE_NONE,
 				session->session_id, ice_handle->handle_id, ice_handle->opaque_id, "local", merged_sdp_type, merged_sdp);
 		}
 	}
 	/* Send the event */
-	JANUS_LOG(LOG_VERB, "[%"SCNu64"] Sending event to transport...\n", ice_handle->handle_id);
-	janus_session_notify_event(session, event);
+	JANUS_LOG(LOG_VERB, "[%"SCNu64"] Sending event to transport %s data...\n", ice_handle->handle_id, m_supportPb>0?"pb":"json");
+
+	if(m_supportPb) {
+		setString(JanusPluginData, "janus", "event");
+		setInt64(JanusPluginData, "session_id", session->session_id);
+		setInt64(JanusPluginData, "sender", ice_handle->handle_id);
+		if(transaction) {
+			setString(JanusPluginData, "transaction", transaction);
+		}
+		//只有一个plugin（videoroom），这里没有必要了
+		//setString(PluginData, "plugin", plugin->get_package());
+
+		char *txt = json_dumps(message, JSON_INDENT(0) | JSON_PRESERVE_ORDER);
+		setString(PluginData, "data", txt);
+		free(txt);
+
+		struct pbc_slice slice;
+		pbc_wmessage_buffer(JanusPluginData, &slice);
+		janus_session_notify_event(session, NULL, slice.buffer, slice.len, "event");
+		pbc_wmessage_delete(JanusPluginData);
+
+		json_decref(event);
+	} else {
+		janus_session_notify_event(session, event, NULL, 0, NULL);
+	}
 
 	if((restart || janus_flags_is_set(&ice_handle->webrtc_flags, JANUS_ICE_HANDLE_WEBRTC_RESEND_TRICKLES))
 			&& janus_ice_is_full_trickle_enabled()) {
@@ -4416,6 +4600,22 @@ gboolean janus_plugin_auth_signature_contains(janus_plugin *plugin, const char *
 	return janus_auth_check_signature_contains(token, plugin->get_package(), descriptor);
 }
 
+// 信号处理函数：打印调用栈并退出
+void handle_signal(int signum) {
+    void *callstack[100];
+    int frame_count = backtrace(callstack, 100); // 获取调用栈帧
+    char **frame_strings = backtrace_symbols(callstack, frame_count); // 转换为符号
+
+    printf("捕获到信号 %d（%s），调用栈如下：\n", signum,
+           signum == SIGSEGV ? "段错误" :
+           signum == SIGABRT ? "异常终止" : "未知错误");
+    for (int i = 0; i < frame_count; i++) {
+        printf("  [%d] %s\n", i, frame_strings[i]);
+    }
+
+    free(frame_strings); // 释放动态分配的符号字符串
+    exit(1); // 退出程序
+}
 
 /* Main */
 gint main(int argc, char *argv[]) {
@@ -4430,6 +4630,13 @@ gint main(int argc, char *argv[]) {
 	signal(SIGINT, janus_handle_signal);
 	signal(SIGTERM, janus_handle_signal);
 	atexit(janus_termination_handler);
+
+	signal(SIGSEGV, handle_signal); // 段错误
+	signal(SIGABRT, handle_signal); // 主动调用 abort() 触发
+	signal(SIGILL, handle_signal);  // 非法指令
+	signal(SIGFPE, handle_signal);  // 浮点异常（如除零）
+
+	m_env = init_env();
 
 	JANUS_PRINT("Janus version: %d (%s)\n", janus_version, janus_version_string);
 	JANUS_PRINT("Janus commit: %s\n", janus_build_git_sha);

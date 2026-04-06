@@ -27,6 +27,21 @@
  */
 
 #include "transport.h"
+#include <arpa/inet.h>
+#include <assert.h>
+#include <netdb.h> /* getprotobyname */
+#include <netinet/in.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <arpa/inet.h>
+#include <sys/types.h>
+#include <zlib.h>
 
 #include <MQTTAsync.h>
 
@@ -55,11 +70,12 @@ const char *janus_mqtt_get_author(void);
 const char *janus_mqtt_get_package(void);
 gboolean janus_mqtt_is_janus_api_enabled(void);
 gboolean janus_mqtt_is_admin_api_enabled(void);
-int janus_mqtt_send_message(janus_transport_session *transport, void *request_id, gboolean admin, json_t *message);
+int janus_mqtt_send_message(janus_transport_session *transport, void *request_id, gboolean admin, json_t *message, const unsigned char *pbData, size_t pbLength, const char *topic);
 void janus_mqtt_session_created(janus_transport_session *transport, guint64 session_id);
 void janus_mqtt_session_over(janus_transport_session *transport, guint64 session_id, gboolean timeout, gboolean claimed);
 void janus_mqtt_session_claimed(janus_transport_session *transport, guint64 session_id);
 json_t *janus_mqtt_query_transport(json_t *request);
+int getNodeHost(const char* host, int port, const char* client, char* content);
 
 #define JANUS_MQTT_VERSION_3_1		  "3.1"
 #define JANUS_MQTT_VERSION_3_1_1		"3.1.1"
@@ -124,10 +140,15 @@ static struct janus_json_parameter configure_parameters[] = {
 #define JANUS_MQTT_ERROR_UNKNOWN_ERROR			499
 
 
+static int g_continue_failure_count = 0;
+
 /* MQTT client context */
 typedef struct janus_mqtt_context {
 	janus_transport_callbacks *gateway;
 	MQTTAsync client;
+	GList *im_host_list;
+	int im_port;
+	int mqtt_port;
 	struct {
 		int mqtt_version;
 		int keep_alive_interval;
@@ -200,6 +221,7 @@ typedef struct janus_mqtt_set_add_transaction_user_property_user_data {
 
 /* Transport client methods */
 void janus_mqtt_client_connected(void *context, char *cause);
+void janus_mqtt_client_before_reconnect(void);
 void janus_mqtt_client_connection_lost(void *context, char *cause);
 int janus_mqtt_client_message_arrived(void *context, char *topicName, int topicLen, MQTTAsync_message *message);
 int janus_mqtt_client_connect(janus_mqtt_context *ctx);
@@ -224,7 +246,7 @@ void janus_mqtt_client_publish_admin_success(void *context, MQTTAsync_successDat
 void janus_mqtt_client_publish_admin_failure(void *context, MQTTAsync_failureData *response);
 void janus_mqtt_client_publish_status_success(void *context, MQTTAsync_successData *response);
 void janus_mqtt_client_publish_status_failure(void *context, MQTTAsync_failureData *response);
-int janus_mqtt_client_publish_message(janus_mqtt_context *ctx, char *payload, gboolean admin);
+int janus_mqtt_client_publish_message(janus_mqtt_context *ctx, char *payload, gboolean admin, const unsigned char *pbData, size_t pbLength, const char *pbTopic);
 int janus_mqtt_client_get_response_code(MQTTAsync_failureData *response);
 #ifdef MQTTVERSION_5
 /* MQTT v5 interface callbacks */
@@ -244,7 +266,7 @@ void janus_mqtt_client_publish_admin_success5(void *context, MQTTAsync_successDa
 void janus_mqtt_client_publish_admin_failure5(void *context, MQTTAsync_failureData5 *response);
 void janus_mqtt_client_publish_status_success5(void *context, MQTTAsync_successData5 *response);
 void janus_mqtt_client_publish_status_failure5(void *context, MQTTAsync_failureData5 *response);
-int janus_mqtt_client_publish_message5(janus_mqtt_context *ctx, char *payload, gboolean admin, MQTTProperties *properties, char *custom_topic);
+int janus_mqtt_client_publish_message5(janus_mqtt_context *ctx, char *payload, gboolean admin, MQTTProperties *properties, char *custom_topic, const unsigned char *pbData, size_t pbLength);
 int janus_mqtt_client_get_response_code5(MQTTAsync_failureData5 *response);
 #endif
 /* MQTT version independent callback implementations */
@@ -267,6 +289,7 @@ void janus_mqtt_client_publish_status_failure_impl(int rc);
 /* We only handle a single client */
 static janus_mqtt_context *context_ = NULL;
 static janus_transport_session *mqtt_session = NULL;
+static char *g_mqtturl = NULL;
 
 #ifdef MQTTVERSION_5
 /* MQTT 5 specific statics and functions */
@@ -310,12 +333,6 @@ int janus_mqtt_init(janus_transport_callbacks *callback, const char *config_path
 	g_snprintf(filename, 255, "%s/%s.jcfg", config_path, JANUS_MQTT_PACKAGE);
 	JANUS_LOG(LOG_VERB, "Configuration file: %s\n", filename);
 	janus_config *config = janus_config_parse(filename);
-	if(config == NULL) {
-		JANUS_LOG(LOG_WARN, "Couldn't find .jcfg configuration file (%s), trying .cfg\n", JANUS_MQTT_PACKAGE);
-		g_snprintf(filename, 255, "%s/%s.cfg", config_path, JANUS_MQTT_PACKAGE);
-		JANUS_LOG(LOG_VERB, "Configuration file: %s\n", filename);
-		config = janus_config_parse(filename);
-	}
 	if(config != NULL) {
 		janus_config_print(config);
 	}
@@ -324,17 +341,74 @@ int janus_mqtt_init(janus_transport_callbacks *callback, const char *config_path
 	janus_config_category *config_status = janus_config_get_create(config, NULL, janus_config_type_category, "status");
 
 	/* Handle configuration */
-	janus_config_item *url_item = janus_config_get(config, config_general, janus_config_type_item, "url");
-	const char *url = g_strdup((url_item && url_item->value) ? url_item->value : "tcp://localhost:1883");
+	// janus_config_item *url_item = janus_config_get(config, config_general, janus_config_type_item, "url");
+	// const char *url = g_strdup((url_item && url_item->value) ? url_item->value : "tcp://localhost:1883");
+
+	janus_config_item *im_host_item = janus_config_get(config, config_general, janus_config_type_item, "im_host");
+	ctx->im_host_list = NULL;
+
+	if(im_host_item && im_host_item->value) {
+		gchar **list = g_strsplit(im_host_item->value, ",", -1);
+		gchar *index = list[0];
+		if(index != NULL) {
+			int i=0;
+			while(index != NULL) {
+				if(strlen(index) > 0) {
+					JANUS_LOG(LOG_INFO, "Adding '%s' to the im host list...\n", index);
+					ctx->im_host_list = g_list_append(ctx->im_host_list, (gpointer)g_strdup(index));
+				}
+				i++;
+				index = list[i];
+			}
+		}
+		g_clear_pointer(&list, g_strfreev);
+	} else {
+		ctx->im_host_list = g_list_append(ctx->im_host_list, (gpointer)g_strdup("localhost"));
+	}
+
+
+	janus_config_item *im_port_item = janus_config_get(config, config_general, janus_config_type_item, "im_port");
+	ctx->im_port = (im_port_item && im_port_item->value) ? atoi(im_port_item->value) : 80;
+
+	janus_config_item *mqtt_port_item = janus_config_get(config, config_general, janus_config_type_item, "mqtt_port");
+	ctx->mqtt_port = (mqtt_port_item && mqtt_port_item->value) ? atoi(mqtt_port_item->value) : 1883;
 
 	janus_config_item *client_id_item = janus_config_get(config, config_general, janus_config_type_item, "client_id");
 	const char *client_id = g_strdup((client_id_item && client_id_item->value) ? client_id_item->value : "guest");
 
-	janus_config_item *username_item = janus_config_get(config, config_general, janus_config_type_item, "username");
-	ctx->connect.username = g_strdup((username_item && username_item->value) ? username_item->value : "guest");
+	// janus_config_item *username_item = janus_config_get(config, config_general, janus_config_type_item, "username");
+	ctx->connect.username = g_strdup((client_id_item && client_id_item->value) ? client_id_item->value : "guest");
 
-	janus_config_item *password_item = janus_config_get(config, config_general, janus_config_type_item, "password");
-	ctx->connect.password = g_strdup((password_item && password_item->value) ? password_item->value : "guest");
+	// janus_config_item *password_item = janus_config_get(config, config_general, janus_config_type_item, "password");
+	ctx->connect.password = g_strdup((client_id_item && client_id_item->value) ? client_id_item->value : "guest");
+
+	char node_host[1024];
+	GList *tmp = ctx->im_host_list;
+	while(tmp) {
+		memset(node_host, 0, sizeof(node_host));
+		char *p = (char *)tmp->data;
+		if(getNodeHost(p, ctx->im_port, ctx->connect.username, node_host) == 0) {
+			char urlbuf[1024];
+			memset(urlbuf, 0, sizeof(urlbuf));
+			if(strstr(node_host, ":") != NULL) {
+				snprintf(urlbuf, 1024, "tcp://%s", node_host);
+			} else {
+				snprintf(urlbuf, 1024, "tcp://%s:%d", node_host, ctx->mqtt_port);
+			}
+
+			if(g_mqtturl != NULL) {
+				g_free(g_mqtturl);
+			}
+			g_mqtturl = g_strdup(urlbuf);
+			break;
+		}
+		tmp = tmp->next;
+	}
+
+	if(strlen(node_host) == 0) {
+		JANUS_LOG(LOG_ERR, "No available im server, exist...\n");
+		exit(-1);
+	}
 
 	janus_config_item *json_item = janus_config_get(config, config_general, janus_config_type_item, "json");
 	if(json_item && json_item->value) {
@@ -372,7 +446,7 @@ int janus_mqtt_init(janus_transport_callbacks *callback, const char *config_path
 		}
 	}
 	if(ssl_item && ssl_item->value && janus_is_true(ssl_item->value)) {
-		if(strstr(url, "ssl://") != url)
+		if(strstr(g_mqtturl, "ssl://") != g_mqtturl)
 			JANUS_LOG(LOG_WARN, "SSL enabled, but MQTT url doesn't start with ssl://...\n");
 
 		ctx->ssl_enabled = TRUE;
@@ -403,7 +477,7 @@ int janus_mqtt_init(janus_transport_callbacks *callback, const char *config_path
 		ctx->verify_peer = (verify && verify->value && janus_is_true(verify->value)) ? TRUE : FALSE;
 	} else {
 		JANUS_LOG(LOG_INFO, "MQTT SSL support disabled\n");
-		if(strstr(url, "ssl://") == url)
+		if(strstr(g_mqtturl, "ssl://") == g_mqtturl)
 			JANUS_LOG(LOG_WARN, "SSL disabled, but MQTT url starts with ssl:// instead of tcp://...\n");
 	}
 
@@ -475,36 +549,36 @@ int janus_mqtt_init(janus_transport_callbacks *callback, const char *config_path
 
 		/* Subscribe configuration */
 		{
-			janus_config_item *topic_item = janus_config_get(config, config_general, janus_config_type_item, "subscribe_topic");
-			if(!topic_item || !topic_item->value) {
-				JANUS_LOG(LOG_FATAL, "Missing topic for incoming messages for MQTT integration...\n");
-				goto error;
-			}
-			ctx->subscribe.topic = g_strdup(topic_item->value);
+			// janus_config_item *topic_item = janus_config_get(config, config_general, janus_config_type_item, "subscribe_topic");
+			// if(!topic_item || !topic_item->value) {
+			// 	JANUS_LOG(LOG_FATAL, "Missing topic for incoming messages for MQTT integration...\n");
+			// 	goto error;
+			// }
+			ctx->subscribe.topic = g_strdup("to-janus");
 
-			janus_config_item *qos_item = janus_config_get(config, config_general, janus_config_type_item, "subscribe_qos");
-			ctx->subscribe.qos = (qos_item && qos_item->value) ? atoi(qos_item->value) : 1;
-			if(ctx->subscribe.qos < 0) {
-				JANUS_LOG(LOG_ERR, "Invalid subscribe-qos value: %s (falling back to default)\n", qos_item->value);
-				ctx->subscribe.qos = 1;
-			}
+			// janus_config_item *qos_item = janus_config_get(config, config_general, janus_config_type_item, "subscribe_qos");
+			ctx->subscribe.qos = 0;//(qos_item && qos_item->value) ? atoi(qos_item->value) : 1;
+			// if(ctx->subscribe.qos < 0) {
+			// 	JANUS_LOG(LOG_ERR, "Invalid subscribe-qos value: %s (falling back to default)\n", qos_item->value);
+			// 	ctx->subscribe.qos = 1;
+			// }
 		}
 
 		/* Publish configuration */
 		{
-			janus_config_item *topic_item = janus_config_get(config, config_general, janus_config_type_item, "publish_topic");
-			if(!topic_item || !topic_item->value) {
-				JANUS_LOG(LOG_FATAL, "Missing topic for outgoing messages for MQTT integration...\n");
-				goto error;
-			}
-			ctx->publish.topic = g_strdup(topic_item->value);
+			// janus_config_item *topic_item = janus_config_get(config, config_general, janus_config_type_item, "publish_topic");
+			// if(!topic_item || !topic_item->value) {
+			// 	JANUS_LOG(LOG_FATAL, "Missing topic for outgoing messages for MQTT integration...\n");
+			// 	goto error;
+			// }
+			ctx->publish.topic = g_strdup("from-janus");
 
-			janus_config_item *qos_item = janus_config_get(config, config_general, janus_config_type_item, "publish_qos");
-			ctx->publish.qos = (qos_item && qos_item->value) ? atoi(qos_item->value) : 1;
-			if(ctx->publish.qos < 0) {
-				JANUS_LOG(LOG_ERR, "Invalid publish-qos value: %s (falling back to default)\n", qos_item->value);
-				ctx->publish.qos = 1;
-			}
+			// janus_config_item *qos_item = janus_config_get(config, config_general, janus_config_type_item, "publish_qos");
+			ctx->publish.qos = 0;//(qos_item && qos_item->value) ? atoi(qos_item->value) : 1;
+			// if(ctx->publish.qos < 0) {
+			// 	JANUS_LOG(LOG_ERR, "Invalid publish-qos value: %s (falling back to default)\n", qos_item->value);
+			// 	ctx->publish.qos = 1;
+			// }
 
 #ifdef MQTTVERSION_5
 			if (ctx->connect.mqtt_version == MQTTVERSION_5) {
@@ -696,7 +770,7 @@ int janus_mqtt_init(janus_transport_callbacks *callback, const char *config_path
 
 	if(MQTTAsync_createWithOptions(
 			&ctx->client,
-			url,
+			g_mqtturl,
 			client_id,
 			MQTTCLIENT_PERSISTENCE_NONE,
 			NULL,
@@ -707,6 +781,11 @@ int janus_mqtt_init(janus_transport_callbacks *callback, const char *config_path
 
 	if(MQTTAsync_setConnected(ctx->client, ctx, janus_mqtt_client_connected) != MQTTASYNC_SUCCESS) {
 		JANUS_LOG(LOG_FATAL, "Can't connect to MQTT broker: error setting up connected callback...\n");
+		goto error;
+	}
+
+	if(MQTTAsync_setBeforeReconnectCallback(ctx->client, ctx, janus_mqtt_client_before_reconnect) != MQTTASYNC_SUCCESS) {
+		JANUS_LOG(LOG_FATAL, "Can't connect to MQTT broker: error setting up before reconnected callback...\n");
 		goto error;
 	}
 
@@ -739,7 +818,6 @@ int janus_mqtt_init(janus_transport_callbacks *callback, const char *config_path
 		goto error;
 	}
 
-	g_free((char *)url);
 	g_free((char *)client_id);
 	janus_config_destroy(config);
 	return 0;
@@ -754,7 +832,6 @@ error:
 #endif
 	janus_transport_session_destroy(mqtt_session);
 	janus_mqtt_client_destroy_context(&ctx);
-	g_free((char *)url);
 	g_free((char *)client_id);
 	janus_config_destroy(config);
 
@@ -848,22 +925,29 @@ gboolean janus_mqtt_is_admin_api_enabled(void) {
 	return janus_mqtt_admin_api_enabled_;
 }
 
-int janus_mqtt_send_message(janus_transport_session *transport, void *request_id, gboolean admin, json_t *message) {
-	if(message == NULL || transport == NULL) return -1;
+int janus_mqtt_send_message(janus_transport_session *transport, void *request_id, gboolean admin, json_t *message, const unsigned char *pbData, size_t pbLength, const char *topic) {
+	if((message == NULL && pbData == NULL) || transport == NULL) return -1;
 
 	/* Not really needed as we always only have a single context, but that's fine */
 	janus_mqtt_context *ctx = (janus_mqtt_context *)transport->transport_p;
 	if(ctx == NULL) {
-		json_decref(message);
+		if(message != NULL) {
+			json_decref(message);
+		}
+
 		return -1;
 	}
 
-	char *payload = json_dumps(message, json_format);
-	if(payload == NULL) {
-		JANUS_LOG(LOG_ERR, "Failed to stringify message...\n");
-		return -1;
+	char *payload = NULL;
+	if(message != NULL) {
+		payload = json_dumps(message, json_format);
+		if(payload == NULL) {
+			JANUS_LOG(LOG_ERR, "Failed to stringify message...\n");
+			return -1;
+		}
 	}
-	JANUS_LOG(LOG_HUGE, "Sending %s API message via MQTT: %s\n", admin ? "admin" : "Janus", payload);
+
+	JANUS_LOG(LOG_HUGE, "Sending %s API message via MQTT: %s\n", admin ? "admin" : "Janus", payload != NULL? payload : "PB data");
 
 	int rc;
 #ifdef MQTTVERSION_5
@@ -886,22 +970,34 @@ int janus_mqtt_send_message(janus_transport_session *transport, void *request_id
 			g_rw_lock_reader_unlock(&janus_mqtt_transaction_states_lock);
 		}
 
-		rc = janus_mqtt_client_publish_message5(ctx, payload, admin, &properties, response_topic);
+		rc = janus_mqtt_client_publish_message5(ctx, payload, admin, &properties, response_topic, pbData, pbLength);
 		if(response_topic != NULL) g_free(response_topic);
 		MQTTProperties_free(&properties);
 	} else {
-		rc = janus_mqtt_client_publish_message(ctx, payload, admin);
+		rc = janus_mqtt_client_publish_message(ctx, payload, admin, pbData, pbLength, topic);
 	}
 #else
-	rc = janus_mqtt_client_publish_message(ctx, payload, admin);
+	rc = janus_mqtt_client_publish_message(ctx, payload, admin, pbData, pbLength, topic);
 #endif
 
 	if(rc != MQTTASYNC_SUCCESS) {
+		g_continue_failure_count++;
 		JANUS_LOG(LOG_ERR, "Can't publish to MQTT topic: %s, return code: %d\n", admin ? ctx->admin.publish.topic : ctx->publish.topic, rc);
+	} else {
+		g_continue_failure_count = 0;
 	}
+    if(g_continue_failure_count > 10) {
+        exit(EXIT_FAILURE);
+    }
 
-	json_decref(message);
+		if(message) {
+			json_decref(message);
+		}
+
+if(message) {
 	free(payload);
+}
+
 	return 0;
 }
 
@@ -1063,6 +1159,39 @@ plugin_response:
 		}
 }
 
+void janus_mqtt_client_before_reconnect(void) {
+	janus_mqtt_context *ctx = (janus_mqtt_context *)context_;
+
+	char node_host[1024];
+	GList *tmp = ctx->im_host_list;
+	JANUS_LOG(LOG_INFO, "MQTT client update server uri before reconnect url\n");
+	while(tmp) {
+		memset(node_host, 0, sizeof(node_host));
+		char *p = (char *)tmp->data;
+		if(getNodeHost(p, ctx->im_port, ctx->connect.username, node_host) == 0) {
+			char urlbuf[1024];
+			memset(urlbuf, 0, sizeof(urlbuf));
+			if(strstr(node_host, ":") != NULL) {
+				snprintf(urlbuf, 1024, "tcp://%s", node_host);
+			} else {
+				snprintf(urlbuf, 1024, "tcp://%s:%d", node_host, ctx->mqtt_port);
+			}
+
+			if(strcmp(g_mqtturl, urlbuf) != 0) {
+				JANUS_LOG(LOG_ERR, "MQTT client address changed, need update server url\n");
+				// exit(-1);
+				if(g_mqtturl != NULL) {
+					g_free(g_mqtturl);
+				}
+				g_mqtturl = g_strdup(urlbuf);
+				MQTTAsync_updateServerURI(ctx->client, g_mqtturl);
+			}
+			break;
+		}
+		tmp = tmp->next;
+	}
+}
+
 void janus_mqtt_client_connected(void *context, char *cause) {
 	JANUS_LOG(LOG_INFO, "Connected to MQTT broker: %s\n", cause);
 	janus_mqtt_context *ctx = (janus_mqtt_context *)context;
@@ -1126,50 +1255,109 @@ void janus_mqtt_client_connection_lost(void *context, char *cause) {
 	}
 }
 
+#define CHUNK_SIZE 1024  // 每次处理的块大小
+/**
+ * gzip格式内存数据解压
+ * @param src 输入的压缩数据（gzip格式）
+ * @param src_len 压缩数据长度
+ * @param dest 输出的解压数据（需手动free）
+ * @param dest_len 输出的解压数据长度
+ * @return 0=成功，非0=失败
+ */
+int gzip_decompress(const unsigned char *src, size_t src_len,
+                    unsigned char **dest, size_t *dest_len) {
+    z_stream zs;                  // zlib解压流结构体
+    int ret;
+    unsigned char out[CHUNK_SIZE]; // 临时输出缓冲区
+
+    // 初始化解压流
+    memset(&zs, 0, sizeof(zs));
+    // MAX_WBITS + 16 表示处理gzip格式（而非zlib格式）
+    if ((ret = inflateInit2(&zs, MAX_WBITS + 16)) != Z_OK) {
+        fprintf(stderr, "inflateInit2 failed: %d\n", ret);
+        return ret;
+    }
+
+    // 分配输出缓冲区（初始大小设为src_len的5倍，根据实际场景调整）
+    *dest = (unsigned char *)malloc(src_len * 5);
+    if (!*dest) {
+        inflateEnd(&zs);
+        return Z_MEM_ERROR;
+    }
+    *dest_len = 0;
+
+    // 设置输入数据
+    zs.next_in = (unsigned char *)src;
+    zs.avail_in = src_len;
+
+    // 循环解压数据
+    do {
+        zs.next_out = out;
+        zs.avail_out = CHUNK_SIZE;
+
+        // 执行解压
+        ret = inflate(&zs, Z_NO_FLUSH);
+        if (ret == Z_STREAM_ERROR) {
+            fprintf(stderr, "inflate failed: %d\n", ret);
+            free(*dest);
+            inflateEnd(&zs);
+            return ret;
+        }
+
+        // 将临时缓冲区的数据复制到输出缓冲区
+        size_t have = CHUNK_SIZE - zs.avail_out;
+        *dest = (unsigned char *)realloc(*dest, *dest_len + have);
+        memcpy(*dest + *dest_len, out, have);
+        *dest_len += have;
+
+    } while (ret != Z_STREAM_END); // 直到解压完成
+
+    // 释放解压流资源
+    inflateEnd(&zs);
+    return Z_OK;
+}
+
 int janus_mqtt_client_message_arrived(void *context, char *topicName, int topicLen, MQTTAsync_message *message) {
 	int ret = FALSE;
 	janus_mqtt_context *ctx = (janus_mqtt_context *)context;
 	gchar *topic = g_strndup(topicName, topicLen);
-	const gboolean janus = janus_mqtt_api_enabled_ && !strcasecmp(topic, ctx->subscribe.topic);
-	const gboolean admin = janus_mqtt_admin_api_enabled_ && !strcasecmp(topic, ctx->admin.subscribe.topic);
-	g_free(topic);
 
-	if((janus || admin) && message->payloadlen) {
-		JANUS_LOG(LOG_HUGE, "Receiving %s API message over MQTT: %.*s\n", admin ? "admin" : "Janus", message->payloadlen, (char*)message->payload);
-
-		json_error_t error;
-		json_t *root = json_loadb(message->payload, message->payloadlen, 0, &error);
-
-#ifdef MQTTVERSION_5
-		if(ctx->connect.mqtt_version == MQTTVERSION_5 && !admin) {
-			/* Save MQTT 5 properties copy to the state */
-			const gchar *transaction = g_strdup(json_string_value(json_object_get(root, "transaction")));
-			if(transaction == NULL) {
-				JANUS_LOG(LOG_WARN, "`transaction` is missing or not a string\n");
-				goto done;
+	unsigned char *decompressed = message->payload;
+	size_t decompressed_len = message->payloadlen;
+	int unziped = 0;
+	if(!strcasecmp(topic, "zto")) {
+			ret = gzip_decompress(message->payload, message->payloadlen, &decompressed, &decompressed_len);
+			if (ret != Z_OK) {
+					fprintf(stderr, "Decompression failed\n");
+					goto done;;
 			}
 
-			MQTTProperties *properties = g_malloc(sizeof(MQTTProperties));
-			*properties = MQTTProperties_copy(&message->properties);
+			unziped = 1;
+			g_free(topic);
+			topic = g_strdup(ctx->subscribe.topic);
+			ret = FALSE;
+	}
+	const gboolean janus = janus_mqtt_api_enabled_ && !strcasecmp(topic, ctx->subscribe.topic);
+	const gboolean admin = janus_mqtt_admin_api_enabled_ && !strcasecmp(topic, ctx->admin.subscribe.topic);
 
-			janus_mqtt_transaction_state *state = g_malloc(sizeof(janus_mqtt_transaction_state));
-			state->properties = properties;
-			state->created_at = janus_get_monotonic_time();
+	if((janus || admin) && decompressed_len) {
+		JANUS_LOG(LOG_HUGE, "Receiving %s API message over MQTT: %.*s\n", admin ? "admin" : "Janus", decompressed_len, (char*)decompressed);
 
-			g_rw_lock_writer_lock(&janus_mqtt_transaction_states_lock);
-			g_hash_table_insert(janus_mqtt_transaction_states, (gpointer) transaction, (gpointer) state);
-			g_rw_lock_writer_unlock(&janus_mqtt_transaction_states_lock);
+		json_error_t error;
+		json_t *root = json_loadb(decompressed, decompressed_len, 0, &error);
+		if(!root) {
+			JANUS_LOG(LOG_ERR, "JSON error: on line %d: %s", error.line, error.text);
 		}
-#endif
-
 		ctx->gateway->incoming_request(&janus_mqtt_transport_, mqtt_session, NULL, admin, root, &error);
 	}
 
 	ret = TRUE;
 
 done:
+	g_free(topic);
 	MQTTAsync_freeMessage(&message);
 	MQTTAsync_free(topicName);
+	if(unziped) free(decompressed);
 	return ret;
 }
 
@@ -1195,6 +1383,8 @@ int janus_mqtt_client_connect(janus_mqtt_context *ctx) {
 	options.username = ctx->connect.username;
 	options.password = ctx->connect.password;
 	options.automaticReconnect = TRUE;
+	options.maxRetryInterval = 10;
+	options.connectTimeout = 5;
 	options.keepAliveInterval = ctx->connect.keep_alive_interval;
 	options.maxInflight = ctx->connect.max_inflight;
 
@@ -1235,7 +1425,7 @@ void janus_mqtt_client_connect_failure5(void *context, MQTTAsync_failureData5 *r
 void janus_mqtt_client_connect_failure_impl(void *context, int rc) {
 	JANUS_LOG(LOG_ERR, "MQTT client has failed connecting to the broker, return code: %d. Reconnecting...\n", rc);
 	/* Automatic reconnect */
-
+#if 1
 	/* Notify handlers about this transport failure */
 	janus_mqtt_context *ctx = (janus_mqtt_context *)context;
 	if(notify_events && ctx && ctx->gateway && ctx->gateway->events_is_enabled()) {
@@ -1244,6 +1434,11 @@ void janus_mqtt_client_connect_failure_impl(void *context, int rc) {
 		json_object_set_new(info, "code", json_integer(rc));
 		ctx->gateway->notify_event(&janus_mqtt_transport_, mqtt_session, info);
 	}
+#else
+	sleep(10);
+	JANUS_LOG(LOG_ERR, "Reboot to connect mqtt client!\n");
+	exit(-1);
+#endif
 }
 
 int janus_mqtt_client_reconnect(janus_mqtt_context *ctx) {
@@ -1499,14 +1694,113 @@ void janus_mqtt_client_admin_subscribe_failure_impl(void *context, int rc) {
 	}
 }
 
-int janus_mqtt_client_publish_message(janus_mqtt_context *ctx, char *payload, gboolean admin) {
+/**
+ * 内存数据压缩为gzip格式
+ * @param src 输入的原始数据
+ * @param src_len 原始数据长度
+ * @param dest 输出的压缩数据（需手动free）
+ * @param dest_len 输出的压缩数据长度
+ * @param level 压缩级别（1-9，0=不压缩，Z_DEFAULT_COMPRESSION=6）
+ * @return 0=成功，非0=失败
+ */
+ int gzip_compress(const unsigned char *src, size_t src_len,
+                   unsigned char **dest, size_t *dest_len, int level)
+ {
+     if (level < 0) level = Z_DEFAULT_COMPRESSION;
+     if (level > 9) level = 9;
+
+     z_stream zs = {0};
+     int ret;
+
+     /* 1. 初始化：MAX_WBITS+16 表示 gzip 格式 */
+     if ((ret = deflateInit2(&zs, level, Z_DEFLATED,
+                             MAX_WBITS + 16, 8, Z_DEFAULT_STRATEGY)) != Z_OK)
+     {
+         fprintf(stderr, "deflateInit2 failed: %d\n", ret);
+         return ret;
+     }
+
+     /* 2. 一次性分配输出缓冲区，避免循环里反复 realloc */
+     size_t cap = src_len + (src_len >> 1) + 1024;   /* 1.5x + 1kB */
+     *dest = malloc(cap);
+     if (!*dest) {
+         deflateEnd(&zs);
+         return Z_MEM_ERROR;
+     }
+
+     zs.next_in  = (Bytef *)src;
+     zs.avail_in = (uInt)src_len;
+
+     *dest_len = 0;
+     unsigned char out[CHUNK_SIZE];
+
+     /* 3. 压缩主循环 */
+     do {
+         zs.next_out  = out;
+         zs.avail_out = CHUNK_SIZE;
+
+         ret = deflate(&zs, zs.avail_in ? Z_NO_FLUSH : Z_FINISH);
+         if (ret == Z_STREAM_ERROR) {          /* 唯一不可恢复错误 */
+             free(*dest);
+             deflateEnd(&zs);
+             return ret;
+         }
+
+         size_t produced = CHUNK_SIZE - zs.avail_out;
+         if (*dest_len + produced > cap) {     /* 理论上不会发生，保险 */
+             cap = *dest_len + produced + 1024;
+             unsigned char *tmp = realloc(*dest, cap);
+             if (!tmp) {
+                 free(*dest);
+                 deflateEnd(&zs);
+                 return Z_MEM_ERROR;
+             }
+             *dest = tmp;
+         }
+         memcpy(*dest + *dest_len, out, produced);
+         *dest_len += produced;
+
+     } while (ret != Z_STREAM_END);
+
+     /* 4. 把缓冲区 trim 到实际长度 */
+     unsigned char *tmp = realloc(*dest, *dest_len);
+     if (tmp) *dest = tmp;   /* 失败也无所谓，只是多占点内存 */
+
+     deflateEnd(&zs);
+     return Z_OK;
+ }
+
+int janus_mqtt_client_publish_message(janus_mqtt_context *ctx, char *payload, gboolean admin, const unsigned char *pbData, size_t pbLength, const char *pbTopic) {
 	MQTTAsync_message msg = MQTTAsync_message_initializer;
-	msg.payload = payload;
-	msg.payloadlen = strlen(payload);
+	char *topic = admin ? ctx->admin.publish.topic : ctx->publish.topic;
+	unsigned char *compressed = NULL;
+	size_t compressed_len = 0;
+	char result[48];
+	if(payload) {
+		msg.payload = payload;
+		msg.payloadlen = strlen(payload);
+	} else {
+		msg.payload = pbData;
+		msg.payloadlen = pbLength;
+		topic = pbTopic;
+	}
+
+	if(!payload && msg.payloadlen > 1024) {
+		int ret = gzip_compress((unsigned char *)msg.payload, msg.payloadlen,
+												&compressed, &compressed_len, Z_DEFAULT_COMPRESSION);
+		if (ret == Z_OK) {
+			const char *prefix = "zip";
+			memset(result, 0, 48);
+			strcpy(result, prefix);
+			strcat(result, pbTopic);
+			topic = result;
+			msg.payload = compressed;
+			msg.payloadlen = compressed_len;
+		}
+	}
+
 	msg.qos = ctx->publish.qos;
 	msg.retained = FALSE;
-
-	char *topic = admin ? ctx->admin.publish.topic : ctx->publish.topic;
 
 	MQTTAsync_responseOptions options = MQTTAsync_responseOptions_initializer;
 	options.context = ctx;
@@ -1519,11 +1813,15 @@ int janus_mqtt_client_publish_message(janus_mqtt_context *ctx, char *payload, gb
 		options.onFailure = janus_mqtt_client_publish_janus_failure;
 	}
 
-	return MQTTAsync_sendMessage(ctx->client, topic, &msg, &options);
+	int ret = MQTTAsync_sendMessage(ctx->client, topic, &msg, &options);
+	if(compressed_len) {
+		free(compressed);
+	}
+	return ret;
 }
 
 #ifdef MQTTVERSION_5
-int janus_mqtt_client_publish_message5(janus_mqtt_context *ctx, char *payload, gboolean admin, MQTTProperties *properties, char *custom_topic) {
+int janus_mqtt_client_publish_message5(janus_mqtt_context *ctx, char *payload, gboolean admin, MQTTProperties *properties, char *custom_topic, const unsigned char *pbData, size_t pbLength) {
 	MQTTAsync_message msg = MQTTAsync_message_initializer;
 	msg.payload = payload;
 	msg.payloadlen = strlen(payload);
@@ -1746,3 +2044,120 @@ void janus_mqtt_transaction_state_free(gpointer state_ptr) {
 	g_free(state);
 }
 #endif
+
+int set_socket_timeout(int sockfd, int timeout_sec) {
+    struct timeval timeout;
+    timeout.tv_sec = timeout_sec;
+    timeout.tv_usec = 0;
+
+    if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout, sizeof(timeout)) < 0) {
+        perror("setsockopt(RCVTIMEO) failed");
+        return -1;
+    }
+
+    if (setsockopt(sockfd, SOL_SOCKET, SO_SNDTIMEO, (char *)&timeout, sizeof(timeout)) < 0) {
+        perror("setsockopt(SNDTIMEO) failed");
+        return -1;
+    }
+
+    return 0;
+}
+
+int getNodeHost(const char* host, int port, const char* client, char* content) {
+    char buffer[BUFSIZ];
+    char result[1024];
+    enum CONSTEXPR { MAX_REQUEST_LEN = 1024};
+    char request[MAX_REQUEST_LEN];
+    struct protoent *protoent;
+    in_addr_t in_addr;
+    int request_len;
+    int socket_file_descriptor;
+    ssize_t nbytes_total, nbytes_last;
+    struct hostent *hostent;
+    struct sockaddr_in sockaddr_in;
+    unsigned short server_port = (unsigned short)port;
+
+    JANUS_LOG(LOG_INFO, "Connect to im server %s, %s\n", host, client);
+    request_len = snprintf(request, MAX_REQUEST_LEN, "GET /api/node?id=%s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", client, host);
+    if (request_len >= MAX_REQUEST_LEN) {
+        JANUS_LOG(LOG_ERR, "Request length large: %d\n", request_len);
+        return -1;
+    }
+
+    /* Build the socket. */
+    protoent = getprotobyname("tcp");
+    if (protoent == NULL) {
+        JANUS_LOG(LOG_ERR, "getprotobyname failed!");
+        return -1;
+    }
+    socket_file_descriptor = socket(AF_INET, SOCK_STREAM, protoent->p_proto);
+    if (socket_file_descriptor == -1) {
+        JANUS_LOG(LOG_ERR, "open socket failed!");
+        return -1;
+    }
+
+    /* Build the address. */
+    hostent = gethostbyname(host);
+    if (hostent == NULL) {
+        JANUS_LOG(LOG_ERR, "error: gethostbyname(\"%s\")\n", host);
+        return -1;
+    }
+    in_addr = inet_addr(inet_ntoa(*(struct in_addr*)*(hostent->h_addr_list)));
+    if (in_addr == (in_addr_t)-1) {
+        JANUS_LOG(LOG_ERR, "error: inet_addr(\"%s\")\n", *(hostent->h_addr_list));
+        return -1;
+    }
+    sockaddr_in.sin_addr.s_addr = in_addr;
+    sockaddr_in.sin_family = AF_INET;
+    sockaddr_in.sin_port = htons(server_port);
+
+		// 设置连接超时
+    if (set_socket_timeout(socket_file_descriptor, 5) < 0) {
+        close(socket_file_descriptor);
+        return -1;
+    }
+
+    /* Actually connect. */
+    if (connect(socket_file_descriptor, (struct sockaddr*)&sockaddr_in, sizeof(sockaddr_in)) == -1) {
+        JANUS_LOG(LOG_ERR, "connect to server (%s) error\n", host);
+        return -1;
+    }
+
+    /* Send HTTP request. */
+    nbytes_total = 0;
+    while (nbytes_total < request_len) {
+        nbytes_last = write(socket_file_descriptor, request + nbytes_total, request_len - nbytes_total);
+        if (nbytes_last == -1) {
+            JANUS_LOG(LOG_ERR, "write error!");
+            return -1;
+        }
+        nbytes_total += nbytes_last;
+    }
+
+    /* Read the response. */
+    memset(result, 0, sizeof(result));
+    int dataLen = 0;
+    while ((nbytes_total = read(socket_file_descriptor, buffer, BUFSIZ)) > 0) {
+        write(STDOUT_FILENO, buffer, nbytes_total);
+        memcpy(result+dataLen, buffer, nbytes_total);
+        dataLen += nbytes_total;
+    }
+    result[dataLen] = 0;
+    JANUS_LOG(LOG_INFO, "receive msg is %s\n", result);
+
+
+    for(int i = 0; i < dataLen -4; i++) {
+      if (result[i] == '\r' && result[i+1] == '\n' && result[i+2] == '\r' && result[i+3] == '\n') {
+        memcpy(content, result+i+4, dataLen - i - 4);
+        break;
+      }
+    }
+
+    if (nbytes_total == -1) {
+        perror("read");
+        return -1;
+    }
+
+    close(socket_file_descriptor);
+    return 0;
+}

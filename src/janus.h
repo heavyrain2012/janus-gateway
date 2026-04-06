@@ -79,7 +79,7 @@ janus_session *janus_session_find(guint64 session_id);
 /*! \brief Method to add an event to notify to the queue of notifications for this session
  * @param[in] session The Janus Core-Client session this notification is related to
  * @param[in] event The event to notify as a Jansson JSON object */
-void janus_session_notify_event(janus_session *session, json_t *event);
+void janus_session_notify_event(janus_session *session, json_t *event, const unsigned char* pbData, size_t pbLength, const char* topic);
 /*! \brief Method to destroy a Janus Core-Client session
  * @param[in] session The Janus Core-Client session to destroy
  * @returns 0 in case of success, a negative integer otherwise */
@@ -163,6 +163,8 @@ int janus_process_incoming_admin_request(janus_request *request);
  * @returns 0 on success, a negative integer otherwise
  */
 int janus_process_success(janus_request *request, json_t *payload);
+
+int janus_process_ack(janus_request *request, guint64 session_id, const gchar *transaction_text, const gchar* hinttext);
 /*! \brief Method to return an error Janus response message (JSON) to the browser
  * @param[in] request The request instance and its source
  * @param[in] session_id Janus session identifier this error refers to

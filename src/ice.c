@@ -38,6 +38,7 @@
 #include "apierror.h"
 #include "ip-utils.h"
 #include "events.h"
+#include "pbc/pbc.h"
 
 /* STUN server/port, if any */
 static char *janus_stun_server = NULL;
@@ -802,6 +803,30 @@ static void janus_ice_clear_queued_packets(janus_ice_handle *handle) {
 	}
 }
 
+extern int is_use_pb(void);
+extern struct pbc_env* m_env;
+extern int setInt64(struct pbc_wmessage *msg, const char *key, int64_t value);
+extern int setInt(struct pbc_wmessage *msg, const char *key, int value);
+extern int setString(struct pbc_wmessage *msg, const char *key, const char *value);
+extern struct pbc_wmessage* setSubMessaage(struct pbc_wmessage *msg, const char *key);
+
+
+struct pbc_wmessage* getPbMessage(const char* messageName, guint64 session_id, guint64 handle_id, const char* opaque_id) {
+	struct pbc_wmessage* ackData = pbc_wmessage_new(m_env, messageName);
+	setInt64(ackData, "session_id", session_id);
+	setInt64(ackData, "sender", handle_id);
+	if(opaque_id != NULL) {
+		setString(ackData, "opaque_id", opaque_id);
+	}
+	return ackData;
+}
+
+void sendPbNotifyEvent(janus_session *session, const char* event, struct pbc_wmessage* ackData) {
+	struct pbc_slice slice;
+	pbc_wmessage_buffer(ackData, &slice);
+	janus_session_notify_event(session, NULL, slice.buffer, slice.len, event);
+	pbc_wmessage_delete(ackData);
+}
 
 static void janus_ice_notify_trickle(janus_ice_handle *handle, char *buffer) {
 	if(handle == NULL)
@@ -813,6 +838,7 @@ static void janus_ice_notify_trickle(janus_ice_handle *handle, char *buffer) {
 	janus_session *session = (janus_session *)handle->session;
 	if(session == NULL)
 		return;
+	if(!is_use_pb()) {
 	json_t *event = json_object();
 	json_object_set_new(event, "janus", json_string("trickle"));
 	json_object_set_new(event, "session_id", json_integer(session->session_id));
@@ -829,9 +855,22 @@ static void janus_ice_notify_trickle(janus_ice_handle *handle, char *buffer) {
 	}
 	json_object_set_new(event, "candidate", candidate);
 	/* Send the event */
+	janus_session_notify_event(session, event, NULL, 0, NULL);
+	} else {
+		struct pbc_wmessage* ackData = getPbMessage("Trickle", session->session_id, handle->handle_id, opaqueid_in_api && handle->opaque_id != NULL?handle->opaque_id:NULL);
+		struct pbc_wmessage* candidateData = setSubMessaage(ackData, "candidate");
+		if(buffer != NULL) {
+			setString(candidateData, "sdpMid", handle->pc_mid);
+			setInt(candidateData, "sdpMLineIndex", 0);
+			setString(candidateData, "candidate", cbuffer);
+		} else {
+			setInt(candidateData, "completed", 1);
+		}
+
+		sendPbNotifyEvent(session, "trickle", ackData);
+	}
 	JANUS_LOG(LOG_VERB, "[%"SCNu64"] Sending trickle event (%s) to transport...\n",
 		handle->handle_id, buffer ? "candidate" : "end-of-candidates");
-	janus_session_notify_event(session, event);
 }
 
 static void janus_ice_notify_media(janus_ice_handle *handle, char *mid, gboolean video, gboolean simulcast, int substream, gboolean up) {
@@ -843,6 +882,7 @@ static void janus_ice_notify_media(janus_ice_handle *handle, char *mid, gboolean
 	janus_session *session = (janus_session *)handle->session;
 	if(session == NULL)
 		return;
+	if(!is_use_pb()) {
 	json_t *event = json_object();
 	json_object_set_new(event, "janus", json_string("media"));
 	json_object_set_new(event, "session_id", json_integer(session->session_id));
@@ -858,7 +898,20 @@ static void janus_ice_notify_media(janus_ice_handle *handle, char *mid, gboolean
 		json_object_set_new(event, "seconds", json_integer(no_media_timer));
 	/* Send the event */
 	JANUS_LOG(LOG_VERB, "[%"SCNu64"] Sending event to transport...\n", handle->handle_id);
-	janus_session_notify_event(session, event);
+	janus_session_notify_event(session, event, NULL, 0, NULL);
+	} else {
+		struct pbc_wmessage* ackData = getPbMessage("Media", session->session_id, handle->handle_id, opaqueid_in_api && handle->opaque_id != NULL?handle->opaque_id:NULL);
+
+		setString(ackData, "mid", mid);
+		setInt(ackData, "type_video", video?1:0);
+		if(simulcast)
+			setInt(ackData, "substream", substream);
+		setInt(ackData, "receiving", up?1:0);
+		if(!up && no_media_timer > 1)
+			setInt(ackData, "seconds", no_media_timer);
+
+		sendPbNotifyEvent(session, "media", ackData);
+	}
 	/* Notify event handlers as well */
 	if(janus_events_is_enabled()) {
 		json_t *info = json_object();
@@ -882,6 +935,7 @@ static void janus_ice_notify_ice_failed(janus_ice_handle *handle) {
 	janus_session *session = (janus_session *)handle->session;
 	if(session == NULL)
 		return;
+if(!is_use_pb()) {
 	json_t *event = json_object();
 	json_object_set_new(event, "janus", json_string("ice-failed"));
 	json_object_set_new(event, "session_id", json_integer(session->session_id));
@@ -890,7 +944,11 @@ static void janus_ice_notify_ice_failed(janus_ice_handle *handle) {
 		json_object_set_new(event, "opaque_id", json_string(handle->opaque_id));
 	/* Send the event */
 	JANUS_LOG(LOG_VERB, "[%"SCNu64"] Sending event to transport...; %p\n", handle->handle_id, handle);
-	janus_session_notify_event(session, event);
+	janus_session_notify_event(session, event, NULL, 0, NULL);
+	} else {
+		struct pbc_wmessage* ackData = getPbMessage("Icefailed", session->session_id, handle->handle_id, opaqueid_in_api && handle->opaque_id != NULL?handle->opaque_id:NULL);
+		sendPbNotifyEvent(session, "ice-failed", ackData);
+	}
 }
 
 void janus_ice_notify_hangup(janus_ice_handle *handle, const char *reason) {
@@ -901,6 +959,7 @@ void janus_ice_notify_hangup(janus_ice_handle *handle, const char *reason) {
 	janus_session *session = (janus_session *)handle->session;
 	if(session == NULL)
 		return;
+if(!is_use_pb()) {
 	json_t *event = json_object();
 	json_object_set_new(event, "janus", json_string("hangup"));
 	json_object_set_new(event, "session_id", json_integer(session->session_id));
@@ -911,7 +970,13 @@ void janus_ice_notify_hangup(janus_ice_handle *handle, const char *reason) {
 		json_object_set_new(event, "reason", json_string(reason));
 	/* Send the event */
 	JANUS_LOG(LOG_VERB, "[%"SCNu64"] Sending event to transport...; %p\n", handle->handle_id, handle);
-	janus_session_notify_event(session, event);
+	janus_session_notify_event(session, event, NULL, 0, NULL);
+	} else {
+		struct pbc_wmessage* ackData = getPbMessage("Hangup", session->session_id, handle->handle_id, opaqueid_in_api && handle->opaque_id != NULL?handle->opaque_id:NULL);
+		if(reason != NULL)
+			setString(ackData, "reason", reason);
+		sendPbNotifyEvent(session, "hangup", ackData);
+	}
 	/* Notify event handlers as well */
 	if(janus_events_is_enabled()) {
 		json_t *info = json_object();
@@ -1989,6 +2054,7 @@ janus_slow_link_update(janus_ice_peerconnection_medium *medium, janus_ice_handle
 		/* Notify the user/application too */
 		janus_session *session = (janus_session *)handle->session;
 		if(session != NULL) {
+		if(!is_use_pb()) {
 			json_t *event = json_object();
 			json_object_set_new(event, "janus", json_string("slowlink"));
 			json_object_set_new(event, "session_id", json_integer(session->session_id));
@@ -2001,7 +2067,15 @@ janus_slow_link_update(janus_ice_peerconnection_medium *medium, janus_ice_handle
 			json_object_set_new(event, "lost", json_integer(sl_lost_recently));
 			/* Send the event */
 			JANUS_LOG(LOG_VERB, "[%"SCNu64"] Sending event to transport...; %p\n", handle->handle_id, handle);
-			janus_session_notify_event(session, event);
+			janus_session_notify_event(session, event, NULL, 0, NULL);
+			} else {
+				struct pbc_wmessage* ackData = getPbMessage("Slowlink", session->session_id, handle->handle_id, opaqueid_in_api && handle->opaque_id != NULL?handle->opaque_id:NULL);
+				setString(ackData, "mid", medium->mid);
+				setInt(ackData, "media_video", video?1:0);
+				setInt(ackData, "uplink", uplink?1:0);
+				setInt(ackData, "lost", sl_lost_recently);
+				sendPbNotifyEvent(session, "slowlink", ackData);
+			}
 			/* Finally, notify event handlers */
 			if(janus_events_is_enabled()) {
 				json_t *info = json_object();
@@ -4662,6 +4736,7 @@ static gboolean janus_ice_outgoing_traffic_handle(janus_ice_handle *handle, janu
 			g_source_unref(handle->rtp_source);
 			handle->rtp_source = NULL;
 		}
+		if(!is_use_pb()) {
 		/* Prepare JSON event to notify user/application */
 		json_t *event = json_object();
 		json_object_set_new(event, "janus", json_string("detached"));
@@ -4671,7 +4746,11 @@ static gboolean janus_ice_outgoing_traffic_handle(janus_ice_handle *handle, janu
 			json_object_set_new(event, "opaque_id", json_string(handle->opaque_id));
 		/* Send the event */
 		JANUS_LOG(LOG_VERB, "[%"SCNu64"] Sending event to transport...; %p\n", handle->handle_id, handle);
-		janus_session_notify_event(session, event);
+		janus_session_notify_event(session, event, NULL, 0, NULL);
+		} else {
+			struct pbc_wmessage* ackData = getPbMessage("Detached", session->session_id, handle->handle_id, opaqueid_in_api && handle->opaque_id != NULL?handle->opaque_id:NULL);
+			sendPbNotifyEvent(session, "detached", ackData);
+		}
 		/* Notify event handlers as well */
 		if(janus_events_is_enabled())
 			janus_events_notify_handlers(JANUS_EVENT_TYPE_HANDLE, JANUS_EVENT_SUBTYPE_NONE,
@@ -5315,6 +5394,7 @@ void janus_ice_dtls_handshake_done(janus_ice_handle *handle) {
 	janus_session *session = (janus_session *)handle->session;
 	if(session == NULL)
 		return;
+if(!is_use_pb()) {
 	json_t *event = json_object();
 	json_object_set_new(event, "janus", json_string("webrtcup"));
 	json_object_set_new(event, "session_id", json_integer(session->session_id));
@@ -5323,7 +5403,11 @@ void janus_ice_dtls_handshake_done(janus_ice_handle *handle) {
 		json_object_set_new(event, "opaque_id", json_string(handle->opaque_id));
 	/* Send the event */
 	JANUS_LOG(LOG_VERB, "[%"SCNu64"] Sending event to transport...; %p\n", handle->handle_id, handle);
-	janus_session_notify_event(session, event);
+	janus_session_notify_event(session, event, NULL, 0, NULL);
+	} else {
+		struct pbc_wmessage* ackData = getPbMessage("Webrtcup", session->session_id, handle->handle_id, opaqueid_in_api && handle->opaque_id != NULL?handle->opaque_id:NULL);
+		sendPbNotifyEvent(session, "webrtcup", ackData);
+	}
 	/* Notify event handlers as well */
 	if(janus_events_is_enabled()) {
 		json_t *info = json_object();

@@ -1933,6 +1933,7 @@ static struct janus_json_parameter create_parameters[] = {
 	{"lock_record", JANUS_JSON_BOOL, 0},
 	{"permanent", JANUS_JSON_BOOL, 0},
 	{"notify_joining", JANUS_JSON_BOOL, 0},
+	{"pb_message", JANUS_JSON_BOOL, 0},
 	{"require_e2ee", JANUS_JSON_BOOL, 0},
 	{"dummy_publisher", JANUS_JSON_BOOL, 0},
 	{"dummy_streams", JANUS_JSON_ARRAY, 0},
@@ -2255,7 +2256,7 @@ static janus_mutex config_mutex = JANUS_MUTEX_INITIALIZER;
 /* Useful stuff */
 static volatile gint initialized = 0, stopping = 0;
 static gboolean notify_events = TRUE;
-static gboolean string_ids = FALSE;
+static gboolean string_ids = TRUE;
 static gboolean ipv6_disabled = FALSE;
 static janus_callbacks *gateway = NULL;
 static GThread *handler_thread;
@@ -2357,6 +2358,7 @@ typedef struct janus_videoroom {
 	gboolean check_allowed;		/* Whether to check tokens when participants join (see below) */
 	GHashTable *allowed;		/* Map of participants (as tokens) allowed to join */
 	gboolean notify_joining;	/* Whether an event is sent to notify all participants if a new participant joins the room */
+	gboolean pb_message; /* Whether combine notify to all member in a room */
 	int helper_threads;			/* Number of helper threads for relaying purposes */
 	GList *threads;				/* List of helper threads, if any */
 	janus_mutex mutex;			/* Mutex to lock this room instance */
@@ -3713,12 +3715,6 @@ int janus_videoroom_init(janus_callbacks *callback, const char *config_path) {
 	g_snprintf(filename, 255, "%s/%s.jcfg", config_path, JANUS_VIDEOROOM_PACKAGE);
 	JANUS_LOG(LOG_VERB, "Configuration file: %s\n", filename);
 	config = janus_config_parse(filename);
-	if(config == NULL) {
-		JANUS_LOG(LOG_WARN, "Couldn't find .jcfg configuration file (%s), trying .cfg\n", JANUS_VIDEOROOM_PACKAGE);
-		g_snprintf(filename, 255, "%s/%s.cfg", config_path, JANUS_VIDEOROOM_PACKAGE);
-		JANUS_LOG(LOG_VERB, "Configuration file: %s\n", filename);
-		config = janus_config_parse(filename);
-	}
 	config_folder = config_path;
 	if(config != NULL)
 		janus_config_print(config);
@@ -3745,9 +3741,9 @@ int janus_videoroom_init(janus_callbacks *callback, const char *config_path) {
 		if(!notify_events && callback->events_is_enabled()) {
 			JANUS_LOG(LOG_WARN, "Notification of events to handlers disabled for %s\n", JANUS_VIDEOROOM_NAME);
 		}
-		janus_config_item *ids = janus_config_get(config, config_general, janus_config_type_item, "string_ids");
-		if(ids != NULL && ids->value != NULL)
-			string_ids = janus_is_true(ids->value);
+		// janus_config_item *ids = janus_config_get(config, config_general, janus_config_type_item, "string_ids");
+		// if(ids != NULL && ids->value != NULL)
+		// 	string_ids = janus_is_true(ids->value);
 		if(string_ids) {
 			JANUS_LOG(LOG_INFO, "VideoRoom will use alphanumeric IDs, not numeric\n");
 		}
@@ -3788,6 +3784,7 @@ int janus_videoroom_init(janus_callbacks *callback, const char *config_path) {
 			janus_config_item *playoutdelay_ext = janus_config_get(config, cat, janus_config_type_item, "playoutdelay_ext");
 			janus_config_item *transport_wide_cc_ext = janus_config_get(config, cat, janus_config_type_item, "transport_wide_cc_ext");
 			janus_config_item *notify_joining = janus_config_get(config, cat, janus_config_type_item, "notify_joining");
+			janus_config_item *pb_message = janus_config_get(config, cat, janus_config_type_item, "pb_message");
 			janus_config_item *req_e2ee = janus_config_get(config, cat, janus_config_type_item, "require_e2ee");
 			janus_config_item *dummy_pub = janus_config_get(config, cat, janus_config_type_item, "dummy_publisher");
 			janus_config_item *dummy_str = janus_config_get(config, cat, janus_config_type_array, "dummy_streams");
@@ -4001,6 +3998,11 @@ int janus_videoroom_init(janus_callbacks *callback, const char *config_path) {
 			videoroom->notify_joining = FALSE;
 			if(notify_joining != NULL && notify_joining->value != NULL)
 				videoroom->notify_joining = janus_is_true(notify_joining->value);
+
+			videoroom->pb_message = FALSE;
+			if(pb_message != NULL && pb_message->value != NULL)
+				videoroom->pb_message = janus_is_true(pb_message->value);
+
 			g_atomic_int_set(&videoroom->destroyed, 0);
 			janus_mutex_init(&videoroom->mutex);
 			janus_refcount_init(&videoroom->ref, janus_videoroom_room_free);
@@ -4290,6 +4292,7 @@ static janus_videoroom_subscriber *janus_videoroom_session_get_subscriber_nodebu
 	return subscriber;
 }
 
+extern int janus_plugin_get_handle_and_session_id(janus_plugin_session *plugin_session, guint64 *handleId, guint64 *sessionId);
 static void janus_videoroom_notify_participants(janus_videoroom_publisher *participant, json_t *msg, gboolean notify_source_participant) {
 	/* participant->room->mutex has to be locked. */
 	if(participant->room == NULL)
@@ -4297,6 +4300,58 @@ static void janus_videoroom_notify_participants(janus_videoroom_publisher *parti
 	GHashTableIter iter;
 	gpointer value;
 	g_hash_table_iter_init(&iter, participant->room->participants);
+
+	if(participant->room && !g_atomic_int_get(&participant->room->destroyed) && participant->room->pb_message) {
+    // 创建GList链表
+    json_t *int64_array = json_array();
+		janus_plugin_session *available_plugin_session = NULL;
+		janus_plugin_session *available_plugin_session2 = NULL;
+		janus_plugin_session *available_plugin_session3 = NULL;
+		while (participant->room && !g_atomic_int_get(&participant->room->destroyed) && g_hash_table_iter_next(&iter, NULL, &value)) {
+			janus_videoroom_publisher *p = value;
+			if(p && !g_atomic_int_get(&p->destroyed) && p->session && (p != participant || notify_source_participant)) {
+				JANUS_LOG(LOG_VERB, "Add participant %s (%s)\n", p->user_id_str, p->display ? p->display : "??");
+
+				guint64 handleId = 0;
+				guint64 sessionId = 0;
+				if(janus_plugin_get_handle_and_session_id(p->session->handle, &handleId, &sessionId) != 0) {
+					continue;
+				}
+
+        json_t *num_node = json_integer(sessionId);
+        // 将节点添加到数组（数组会接管节点的引用计数）
+        json_array_append_new(int64_array, num_node);
+
+				available_plugin_session3 = available_plugin_session2;
+				available_plugin_session2 = available_plugin_session;
+				available_plugin_session = p->session->handle;
+			}
+		}
+
+    json_object_set_new(msg, "combine_session", int64_array);
+
+		if(available_plugin_session) {
+		    JANUS_LOG(LOG_INFO, "Send notifications\n");
+			int ret = gateway->push_event(available_plugin_session, &janus_videoroom_plugin, NULL, msg, NULL);
+		    JANUS_LOG(LOG_VERB, "  >> %d (%s)\n", ret, janus_get_api_error(ret));
+
+		    if(ret != JANUS_OK && ret != -1) {
+		        if(available_plugin_session2) {
+		            JANUS_LOG(LOG_INFO, "Send notifications failure, retry!\n");
+		            int ret = gateway->push_event(available_plugin_session2, &janus_videoroom_plugin, NULL, msg, NULL);
+		            if(ret != JANUS_OK && ret != -1) {
+		                if(available_plugin_session3) {
+		                    JANUS_LOG(LOG_INFO, "Send notifications failure, retry again!\n");
+                            gateway->push_event(available_plugin_session3, &janus_videoroom_plugin, NULL, msg, NULL);
+						}
+					}
+				}
+			}
+		}
+
+		return;
+	}
+
 	while (participant->room && !g_atomic_int_get(&participant->room->destroyed) && g_hash_table_iter_next(&iter, NULL, &value)) {
 		janus_videoroom_publisher *p = value;
 		if(p && !g_atomic_int_get(&p->destroyed) && p->session && (p != participant || notify_source_participant) && !participant->dummy) {
@@ -4498,9 +4553,22 @@ static void janus_videoroom_leave_or_unpublish(janus_videoroom_publisher *partic
 		g_hash_table_remove(participant->room->participants,
 			string_ids ? (gpointer)participant->user_id_str : (gpointer)&participant->user_id);
 		g_hash_table_remove(participant->room->private_ids, GUINT_TO_POINTER(participant->pvt_id));
+
+		janus_videoroom *videoroom = NULL;
+		if(g_hash_table_size(participant->room->participants) == 0) {
+			videoroom = participant->room;
+			janus_refcount_increase(&videoroom->ref);
+		}
+
 		janus_mutex_lock(&participant->mutex);
 		g_clear_pointer(&participant->room, janus_videoroom_room_dereference);
 		janus_mutex_unlock(&participant->mutex);
+
+		if(videoroom) {
+			JANUS_LOG(LOG_INFO, "VideoRoom no any participants, remove it...\n");
+			g_hash_table_remove(rooms, string_ids ? (gpointer)videoroom->room_id_str : (gpointer)&videoroom->room_id);
+			janus_refcount_decrease(&videoroom->ref);
+		}
 	}
 	janus_mutex_unlock(&room->mutex);
 	janus_refcount_decrease(&room->ref);
@@ -4751,6 +4819,8 @@ static int janus_videoroom_access_room(json_t *root, gboolean check_modify, gboo
 	return 0;
 }
 
+extern void use_pb(void);
+extern int is_use_pb(void);
 /* Helper method to process synchronous requests */
 static json_t *janus_videoroom_process_synchronous_request(janus_videoroom_session *session, json_t *message) {
 	json_t *request = json_object_get(message, "request");
@@ -4867,6 +4937,7 @@ static json_t *janus_videoroom_process_synchronous_request(janus_videoroom_sessi
 		json_t *playoutdelay_ext = json_object_get(root, "playoutdelay_ext");
 		json_t *transport_wide_cc_ext = json_object_get(root, "transport_wide_cc_ext");
 		json_t *notify_joining = json_object_get(root, "notify_joining");
+		json_t *pb_message = json_object_get(root, "pb_message");
 		json_t *record = json_object_get(root, "record");
 		json_t *rec_dir = json_object_get(root, "rec_dir");
 		json_t *lock_record = json_object_get(root, "lock_record");
@@ -5130,6 +5201,10 @@ static json_t *janus_videoroom_process_synchronous_request(janus_videoroom_sessi
 		/* By default, the VideoRoom plugin does not notify about participants simply joining the room.
 		   It only notifies when the participant actually starts publishing media. */
 		videoroom->notify_joining = notify_joining ? json_is_true(notify_joining) : FALSE;
+		videoroom->pb_message = pb_message ? json_is_true(pb_message) : FALSE;
+    if(videoroom->pb_message) {
+      use_pb();
+    }
 		if(record) {
 			videoroom->record = json_is_true(record);
 		}
@@ -5279,6 +5354,8 @@ static json_t *janus_videoroom_process_synchronous_request(janus_videoroom_sessi
 			janus_config_add(config, c, janus_config_item_create("transport_wide_cc_ext", videoroom->transport_wide_cc_ext ? "true" : "false"));
 			if(videoroom->notify_joining)
 				janus_config_add(config, c, janus_config_item_create("notify_joining", "true"));
+			if(videoroom->pb_message)
+				janus_config_add(config, c, janus_config_item_create("pb_message", "true"));
 			if(videoroom->record)
 				janus_config_add(config, c, janus_config_item_create("record", "true"));
 			if(videoroom->rec_dir)
@@ -5313,6 +5390,7 @@ static json_t *janus_videoroom_process_synchronous_request(janus_videoroom_sessi
 		json_object_set_new(response, "videoroom", json_string("created"));
 		json_object_set_new(response, "room", string_ids ? json_string(videoroom->room_id_str) : json_integer(videoroom->room_id));
 		json_object_set_new(response, "permanent", save ? json_true() : json_false());
+    json_object_set_new(response, "pb_message", videoroom->pb_message ? json_true() : json_false());
 		/* Also notify event handlers */
 		if(notify_events && gateway->events_is_enabled()) {
 			json_t *info = json_object();
@@ -5476,6 +5554,8 @@ static json_t *janus_videoroom_process_synchronous_request(janus_videoroom_sessi
 			janus_config_add(config, c, janus_config_item_create("transport_wide_cc_ext", videoroom->transport_wide_cc_ext ? "true" : "false"));
 			if(videoroom->notify_joining)
 				janus_config_add(config, c, janus_config_item_create("notify_joining", "true"));
+			if(videoroom->pb_message)
+				janus_config_add(config, c, janus_config_item_create("pb_message", "true"));
 			if(videoroom->record)
 				janus_config_add(config, c, janus_config_item_create("record", "true"));
 			if(videoroom->rec_dir)
@@ -5639,41 +5719,59 @@ static json_t *janus_videoroom_process_synchronous_request(janus_videoroom_sessi
 			}
 			if(!g_atomic_int_get(&room->destroyed)) {
 				json_t *rl = json_object();
-				json_object_set_new(rl, "room", string_ids ? json_string(room->room_id_str) : json_integer(room->room_id));
-				json_object_set_new(rl, "description", json_string(room->room_name));
-				json_object_set_new(rl, "pin_required", room->room_pin ? json_true() : json_false());
-				json_object_set_new(rl, "is_private", room->is_private ? json_true() : json_false());
-				json_object_set_new(rl, "max_publishers", json_integer(room->max_publishers));
-				json_object_set_new(rl, "bitrate", json_integer(room->bitrate));
-				if(room->bitrate_cap)
-					json_object_set_new(rl, "bitrate_cap", json_true());
-				json_object_set_new(rl, "fir_freq", json_integer(room->fir_freq));
-				json_object_set_new(rl, "require_pvtid", room->require_pvtid ? json_true() : json_false());
-				json_object_set_new(rl, "require_e2ee", room->require_e2ee ? json_true() : json_false());
-				json_object_set_new(rl, "dummy_publisher", room->dummy_publisher ? json_true() : json_false());
-				json_object_set_new(rl, "notify_joining", room->notify_joining ? json_true() : json_false());
-				char audio_codecs[100];
-				char video_codecs[100];
-				janus_videoroom_codecstr(room, audio_codecs, video_codecs, sizeof(audio_codecs), ",");
-				json_object_set_new(rl, "audiocodec", json_string(audio_codecs));
-				json_object_set_new(rl, "videocodec", json_string(video_codecs));
-				if(room->do_opusfec)
-					json_object_set_new(rl, "opus_fec", json_true());
-				if(room->do_opusdtx)
-					json_object_set_new(rl, "opus_dtx", json_true());
-				json_object_set_new(rl, "record", room->record ? json_true() : json_false());
-				json_object_set_new(rl, "rec_dir", json_string(room->rec_dir));
-				json_object_set_new(rl, "lock_record", room->lock_record ? json_true() : json_false());
-				json_object_set_new(rl, "num_participants", json_integer(g_hash_table_size(room->participants)));
-				json_object_set_new(rl, "audiolevel_ext", room->audiolevel_ext ? json_true() : json_false());
-				json_object_set_new(rl, "audiolevel_event", room->audiolevel_event ? json_true() : json_false());
-				if(room->audiolevel_event) {
-					json_object_set_new(rl, "audio_active_packets", json_integer(room->audio_active_packets));
-					json_object_set_new(rl, "audio_level_average", json_integer(room->audio_level_average));
-				}
-				json_object_set_new(rl, "videoorient_ext", room->videoorient_ext ? json_true() : json_false());
-				json_object_set_new(rl, "playoutdelay_ext", room->playoutdelay_ext ? json_true() : json_false());
-				json_object_set_new(rl, "transport_wide_cc_ext", room->transport_wide_cc_ext ? json_true() : json_false());
+				// json_object_set_new(rl, "room", string_ids ? json_string(room->room_id_str) : json_integer(room->room_id));
+				// json_object_set_new(rl, "description", json_string(room->room_name));
+				// json_object_set_new(rl, "pin_required", room->room_pin ? json_true() : json_false());
+				// json_object_set_new(rl, "is_private", room->is_private ? json_true() : json_false());
+				// json_object_set_new(rl, "max_publishers", json_integer(room->max_publishers));
+				// json_object_set_new(rl, "bitrate", json_integer(room->bitrate));
+				// if(room->bitrate_cap)
+				// 	json_object_set_new(rl, "bitrate_cap", json_true());
+				// json_object_set_new(rl, "fir_freq", json_integer(room->fir_freq));
+				// json_object_set_new(rl, "require_pvtid", room->require_pvtid ? json_true() : json_false());
+				// json_object_set_new(rl, "require_e2ee", room->require_e2ee ? json_true() : json_false());
+				// json_object_set_new(rl, "dummy_publisher", room->dummy_publisher ? json_true() : json_false());
+				// json_object_set_new(rl, "notify_joining", room->notify_joining ? json_true() : json_false());
+				// json_object_set_new(rl, "pb_message", room->pb_message ? json_true() : json_false());
+				// char audio_codecs[100];
+				// char video_codecs[100];
+				// janus_videoroom_codecstr(room, audio_codecs, video_codecs, sizeof(audio_codecs), ",");
+				// json_object_set_new(rl, "audiocodec", json_string(audio_codecs));
+				// json_object_set_new(rl, "videocodec", json_string(video_codecs));
+				// if(room->do_opusfec)
+				// 	json_object_set_new(rl, "opus_fec", json_true());
+				// if(room->do_opusdtx)
+				// 	json_object_set_new(rl, "opus_dtx", json_true());
+				// json_object_set_new(rl, "record", room->record ? json_true() : json_false());
+				// json_object_set_new(rl, "rec_dir", json_string(room->rec_dir));
+				// json_object_set_new(rl, "lock_record", room->lock_record ? json_true() : json_false());
+				// json_object_set_new(rl, "num_participants", json_integer(g_hash_table_size(room->participants)));
+				// json_object_set_new(rl, "audiolevel_ext", room->audiolevel_ext ? json_true() : json_false());
+				// json_object_set_new(rl, "audiolevel_event", room->audiolevel_event ? json_true() : json_false());
+				// if(room->audiolevel_event) {
+				// 	json_object_set_new(rl, "audio_active_packets", json_integer(room->audio_active_packets));
+				// 	json_object_set_new(rl, "audio_level_average", json_integer(room->audio_level_average));
+				// }
+				// json_object_set_new(rl, "videoorient_ext", room->videoorient_ext ? json_true() : json_false());
+				// json_object_set_new(rl, "playoutdelay_ext", room->playoutdelay_ext ? json_true() : json_false());
+				// json_object_set_new(rl, "transport_wide_cc_ext", room->transport_wide_cc_ext ? json_true() : json_false());
+
+        if(is_use_pb()) {
+          json_object_set_new(rl, "rm", string_ids ? json_string(room->room_id_str) : json_integer(room->room_id));
+          json_object_set_new(rl, "des", json_string(room->room_name));
+          if(room->is_private) json_object_set_new(rl, "pri", json_true());
+          json_object_set_new(rl, "mp", json_integer(room->max_publishers));
+          if(room->record) json_object_set_new(rl, "rd", json_true());
+          if(g_hash_table_size(room->participants)>0) json_object_set_new(rl, "np", json_integer(g_hash_table_size(room->participants)));
+        } else {
+          json_object_set_new(rl, "room", string_ids ? json_string(room->room_id_str) : json_integer(room->room_id));
+          json_object_set_new(rl, "description", json_string(room->room_name));
+          json_object_set_new(rl, "pin_required", room->room_pin ? json_true() : json_false());
+          json_object_set_new(rl, "is_private", room->is_private ? json_true() : json_false());
+          json_object_set_new(rl, "max_publishers", json_integer(room->max_publishers));
+          json_object_set_new(rl, "record", room->record ? json_true() : json_false());
+          json_object_set_new(rl, "num_participants", json_integer(g_hash_table_size(room->participants)));
+        }
 				json_array_append_new(list, rl);
 			}
 			janus_refcount_decrease(&room->ref);
@@ -6942,6 +7040,7 @@ static json_t *janus_videoroom_process_synchronous_request(janus_videoroom_sessi
 				gboolean found = FALSE, talking = FALSE;
 				janus_mutex_lock(&p->streams_mutex);
 				GList *temp = p->streams;
+				json_t *media = json_array();
 				while(temp) {
 					janus_videoroom_publisher_stream *ps = (janus_videoroom_publisher_stream *)temp->data;
 					if(ps && ps->type == JANUS_VIDEOROOM_MEDIA_AUDIO &&
@@ -6950,10 +7049,35 @@ static json_t *janus_videoroom_process_synchronous_request(janus_videoroom_sessi
 						talking |= ps->talking;
 					}
 					temp = temp->next;
+
+    			json_t *mediainfo = json_object();
+    			json_object_set_new(mediainfo, "type", json_string(janus_videoroom_media_str(ps->type)));
+    			json_object_set_new(mediainfo, "mindex", json_integer(ps->mindex));
+    			json_object_set_new(mediainfo, "mid", json_string(ps->mid));
+    			if(ps->disabled) {
+    				json_object_set_new(mediainfo, "disabled", json_true());
+    			} else {
+    				if(ps->description)
+    					json_object_set_new(mediainfo, "description", json_string(ps->description));
+    				if(ps->type == JANUS_VIDEOROOM_MEDIA_AUDIO) {
+    					json_object_set_new(mediainfo, "codec", json_string(janus_audiocodec_name(ps->acodec)));
+    				} else if(ps->type == JANUS_VIDEOROOM_MEDIA_VIDEO) {
+    					json_object_set_new(mediainfo, "codec", json_string(janus_videocodec_name(ps->vcodec)));
+    					if(ps->muted)
+    						json_object_set_new(mediainfo, "moderated", json_true());
+    					if(ps->simulcast)
+    						json_object_set_new(mediainfo, "simulcast", json_true());
+    					if(ps->svc)
+    						json_object_set_new(mediainfo, "svc", json_true());
+    				}
+    			}
+    			json_array_append_new(media, mediainfo);
 				}
 				janus_mutex_unlock(&p->streams_mutex);
+
 				if(found)
 					json_object_set_new(pl, "talking", talking ? json_true() : json_false());
+				json_object_set_new(pl, "streams", media);
 			}
 			json_array_append_new(list, pl);
 		}

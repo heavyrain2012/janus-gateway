@@ -14,7 +14,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <libgen.h>
-
+#include <unistd.h>
 #include <libconfig.h>
 
 #include "config.h"
@@ -188,7 +188,12 @@ janus_config *janus_config_parse(const char *config_file) {
 	/* Open file */
 	FILE *file = fopen(config_file, "rt");
 	if(!file) {
-		JANUS_LOG(LOG_ERR, "  -- Error reading configuration file '%s'... error %d (%s)\n", filename, errno, g_strerror(errno));
+		if (access(config_file, F_OK) != 0) {
+				JANUS_LOG(LOG_ERR, "  -- Error reading configuration file '%s', file not exist!!!\n", config_file);
+		} else {
+				JANUS_LOG(LOG_ERR, "  -- Error reading configuration file '%s', file not permission to read!!!\n", config_file);
+		}
+
 		g_free(tmp_filename);
 		return NULL;
 	}
