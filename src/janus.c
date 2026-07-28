@@ -35,7 +35,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <signal.h>
+#ifdef __GLIBC__
 #include <execinfo.h>
+#endif
 #include <unistd.h>
 
 
@@ -4602,6 +4604,7 @@ gboolean janus_plugin_auth_signature_contains(janus_plugin *plugin, const char *
 
 // 信号处理函数：打印调用栈并退出
 void handle_signal(int signum) {
+#ifdef __GLIBC__
     void *callstack[100];
     int frame_count = backtrace(callstack, 100); // 获取调用栈帧
     char **frame_strings = backtrace_symbols(callstack, frame_count); // 转换为符号
@@ -4614,6 +4617,11 @@ void handle_signal(int signum) {
     }
 
     free(frame_strings); // 释放动态分配的符号字符串
+#else
+    printf("捕获到信号 %d（%s），退出。\n", signum,
+           signum == SIGSEGV ? "段错误" :
+           signum == SIGABRT ? "异常终止" : "未知错误");
+#endif
     exit(1); // 退出程序
 }
 
